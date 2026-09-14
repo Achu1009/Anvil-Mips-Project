@@ -1,0 +1,60 @@
+import "types.anv"
+
+proc Memory(ep_in: right ex_mem_ch, ep_out: left mem_wb_ch) {
+    reg dmem: logic[256][32];
+    reg init_done: logic;
+    
+    loop {
+        let done = *init_done;
+        if done == 1'b0 {
+            set dmem[0] := 32'd20 >>
+            set init_done := 1'b1 >>
+            cycle 1
+        } else {
+            let in_data = recv ep_in.req >>
+            
+            let in_alu_result = in_data.alu_result;
+            let in_dest_reg = in_data.dest_reg;
+            let in_reg_write = in_data.reg_write;
+            let in_mem_to_reg = in_data.mem_to_reg;
+            let mem_write = in_data.mem_write;
+            let mem_read = in_data.mem_read;
+            let wr_data = in_data.write_data;
+            
+            let addr_word = in_alu_result[2+:8];
+            
+            if mem_write == 1'b1 {
+                set dmem[addr_word] := wr_data >>
+                let mem_data = *dmem[addr_word];
+                
+                let out_data = mem_wb_t::{
+                    alu_result = in_alu_result;
+                    mem_data = mem_data;
+                    dest_reg = in_dest_reg;
+                    reg_write = in_reg_write;
+                    mem_to_reg = in_mem_to_reg
+                } >>
+
+                send ep_out.req(out_data) >>
+                recv ep_out.res >>
+                send ep_in.res(1'b1) >>
+                cycle 1
+            } else {
+                let mem_data = *dmem[addr_word];
+                
+                let out_data = mem_wb_t::{
+                    alu_result = in_alu_result;
+                    mem_data = mem_data;
+                    dest_reg = in_dest_reg;
+                    reg_write = in_reg_write;
+                    mem_to_reg = in_mem_to_reg
+                } >>
+
+                send ep_out.req(out_data) >>
+                recv ep_out.res >>
+                send ep_in.res(1'b1) >>
+                cycle 1
+            }
+        }
+    }
+}

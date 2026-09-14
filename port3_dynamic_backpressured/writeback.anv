@@ -1,0 +1,48 @@
+import "types.anv"
+
+// ============================================================
+//  Writeback  --  WB stage
+//  Holds the MEM/WB pipeline register (mw_*) and fans the resolved
+//  value out twice: to Decode (the architectural register write and
+//  the read bypass) and to Execute (the MEM/WB forwarding level).
+//
+//  TWO SystemVerilog workarounds disappear here:
+//
+//   * `wb_done`.  In the SV the register file would be written once
+//     per stalled cycle, because the always_ff block re-executes on
+//     every clock edge whether or not the pipeline advanced.  A
+//     thread does not re-execute: the write happens once per ROUND,
+//     and a round is one write-back.  Exactly-once (P34b) is
+//     structural, not a suppression term.
+//
+//   * "freeze MEM/WB, do not bubble it".  mw_* is only assigned when
+//     Memory hands over a new bundle.  There is no code path that
+//     could zero it mid-stall, so mutant M25 has nothing to mutate.
+//
+//  The `done` messages are the price: they are what tells Anvil that
+//  ID and EX have finished with the value, and they are the reason
+//  the compiler is willing to see mw_* held stable across a stall.
+// ============================================================
+proc Writeback(ep_in: right mem_wb_ch, ep_id: left wb_ch, ep_ex: left wb_ch) {
+    reg mw_alu   : logic[32];  reg mw_mdata : logic[32];
+    reg mw_dest  : logic[5];
+    reg mw_rw    : logic;      reg mw_m2r   : logic;
+
+    loop {
+        let wd = if *mw_m2r == 1'b1 { *mw_mdata } else { *mw_alu } >>
+        let u  = wb_update_t::{ write_data = wd; dest_reg = *mw_dest; reg_write = *mw_rw };
+
+        send ep_id.upd(u) >>
+        send ep_ex.upd(u) >>
+
+        let d1   = recv ep_id.done >>
+        let d2   = recv ep_ex.done >>
+        let in_d = recv ep_in.req  >>
+
+        set mw_alu   := in_d.alu_result;
+        set mw_mdata := in_d.mem_data;
+        set mw_dest  := in_d.dest_reg;
+        set mw_rw    := in_d.reg_write;
+        set mw_m2r   := in_d.mem_to_reg
+    }
+}

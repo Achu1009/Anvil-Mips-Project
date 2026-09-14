@@ -1,0 +1,40 @@
+import mips_pkg::*;
+
+module instruction_fetch #(
+    parameter int IMEM_WORDS = 256          // 256 words == 1 KiB
+) (
+    input  logic        clk,
+    input  logic        reset,
+    input  logic        pc_write,
+    input  logic        branch_taken,
+    input  logic [31:0] branch_target,
+    output logic [31:0] instr,
+    output logic [31:0] pc_plus4
+);
+    localparam int IAW = $clog2(IMEM_WORDS);
+
+    logic [31:0] pc;
+    logic [31:0] imem [0:IMEM_WORDS-1];
+    integer i;
+
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset) begin
+            pc <= 32'd0;
+
+            for (i = 0; i < IMEM_WORDS; i = i + 1) begin
+                imem[i] <= 32'd0;
+            end
+
+            // __IMEM_PROGRAM__
+
+        end else if (branch_taken) begin
+            pc <= branch_target;
+        end else if (pc_write) begin
+            pc <= pc + 32'd4;
+        end
+    end
+
+    assign instr      = imem[pc[IAW+1:2]];
+    assign pc_plus4   = pc + 32'd4;
+
+endmodule

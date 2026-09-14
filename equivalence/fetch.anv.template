@@ -1,0 +1,31 @@
+import "types.anv"
+
+proc Fetch(ep_out: left if_id_ch, ep_branch: right branch_ch, ep_stall: right stall_ch) {
+    reg pc        : logic[32];
+    reg imem      : logic[256][32];
+    reg init_done : logic;
+
+    loop {
+        let b     = recv ep_branch.req >>
+        let stall = recv ep_stall.req  >>
+
+        let booted = *init_done;
+        let p      = *pc;
+        let raw    = *imem[p[2+:8]];
+
+        let instr = if booted == 1'b1 { raw }  else { 32'd0 } >>
+        let vld   = if booted == 1'b1 { 1'b1 } else { 1'b0 }  >>
+
+        send ep_out.req(if_id_t::{ pc = p; instr = instr; valid = vld }) >>
+
+        let held = if stall == 1'b1 { p } else { p + 32'd4 }                   >>
+        let brn  = if b.branch_taken == 1'b1 { b.branch_target } else { held } >>
+        let np   = if booted == 1'b0 { p } else { brn }                        >>
+
+        if booted == 1'b0 {
+// __IMEM_PROGRAM__
+        } else { cycle 1 };
+        set init_done := 1'b1;
+        set pc := np
+    }
+}

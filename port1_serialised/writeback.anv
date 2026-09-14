@@ -1,0 +1,54 @@
+import "types.anv"
+
+proc Writeback(ep_in: right mem_wb_ch, ep_wb_out: left wb_id_ch) {
+    reg prev_write_data : logic[32];
+    reg prev_dest_reg : logic[5];
+    reg prev_reg_write : logic;
+    
+    reg temp_write_data : logic[32];
+    reg temp_dest_reg : logic[5];
+    reg temp_reg_write : logic;
+    
+    loop {
+        let out_data = wb_update_t::{
+            write_data = *prev_write_data;
+            dest_reg = *prev_dest_reg;
+            reg_write = *prev_reg_write
+        } >>
+        send ep_wb_out.req(out_data) >>
+        
+        let in_data = recv ep_in.req >>
+        
+        let mtr = in_data.mem_to_reg;
+        let mem_d = in_data.mem_data;
+        let alu_res = in_data.alu_result;
+        let in_dest_reg = in_data.dest_reg;
+        let in_reg_write = in_data.reg_write;
+        
+        if mtr == 1'b1 {
+            set temp_write_data := mem_d >>
+            set temp_dest_reg := in_dest_reg >>
+            set temp_reg_write := in_reg_write >>
+            
+            send ep_in.res(1'b1) >>
+            recv ep_wb_out.res >>
+            
+            set prev_write_data := *temp_write_data >>
+            set prev_dest_reg := *temp_dest_reg >>
+            set prev_reg_write := *temp_reg_write >>
+            cycle 1
+        } else {
+            set temp_write_data := alu_res >>
+            set temp_dest_reg := in_dest_reg >>
+            set temp_reg_write := in_reg_write >>
+            
+            send ep_in.res(1'b1) >>
+            recv ep_wb_out.res >>
+            
+            set prev_write_data := *temp_write_data >>
+            set prev_dest_reg := *temp_dest_reg >>
+            set prev_reg_write := *temp_reg_write >>
+            cycle 1
+        }
+    }
+}

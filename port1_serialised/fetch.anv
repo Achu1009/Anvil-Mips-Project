@@ -1,0 +1,45 @@
+import "types.anv"
+
+proc Fetch(ep_out: left if_id_ch, ep_branch: right branch_ch) {
+    reg pc: logic[32];
+    reg imem: logic[256][32];
+    reg init_done: logic;
+    
+    loop {
+        let done = *init_done;
+        
+        if done == 1'b0 {
+            set imem[0] := 32'h8C010000 >>
+            set imem[1] := 32'h00201020 >>
+            set imem[2] := 32'h00411022 >>
+            set imem[3] := 32'h08400005 >>
+            set imem[4] := 32'h00411820 >>
+            set imem[5] := 32'h00412020 >>
+            set imem[6] := 32'hAC810000 >>
+            set init_done := 1'b1 >>
+            cycle 1
+        } else {
+            let b_update = recv ep_branch.req >>
+            let branch = b_update.branch_taken;
+            let b_target = b_update.branch_target;
+            
+            let p_c = *pc;
+            
+            if branch == 1'b1 {
+                send ep_out.req(if_id_t::{ pc = p_c; instr = 32'd0 }) >>
+                recv ep_out.res >>
+                set pc := b_target >>
+                send ep_branch.res(1'b1) >>
+                cycle 1
+            } else {
+                let index = p_c[2+:8];
+                let instr = *imem[index];
+                send ep_out.req(if_id_t::{ pc = p_c; instr = instr }) >>
+                recv ep_out.res >>
+                set pc := p_c + 32'd4 >>
+                send ep_branch.res(1'b1) >>
+                cycle 1
+            }
+        }
+    }
+}

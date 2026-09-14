@@ -1,0 +1,250 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{mathpazo}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{hyperref}
+
+\hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue}
+\titlespacing*{\section}{0pt}{12pt}{6pt}
+\titlespacing*{\subsection}{0pt}{8pt}{4pt}
+\setlist{nosep, leftmargin=2em}
+
+\title{\textbf{Supplementary Material:\\[4pt] \large SVA Suite Rationale and Categorization}}
+\author{Achyuta Ganesh}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent This supplementary document details the final 30 SystemVerilog Assertions (SVAs) chosen for the Gold-Standard verification suite. Per the evaluation rubric, each property explicitly details what it protects, what bug would slip past without it, and how a violation manifests.
+
+\section*{A) Local State: Reset}
+\begin{itemize}
+    \item \textbf{P20a (Reset reads zero):} 
+    \begin{itemize}
+        \item Ensures the pipeline is cleanly initialized at the clock edge.
+        \item Without it, a dirty reset condition could leave residual values in the pipeline buffers.
+        \item As a result upon boot, CPU would execute garbage instructions.
+    \end{itemize}
+    
+    \item \textbf{P20b (Asynchronous clear):} 
+    \begin{itemize}
+        \item Ensures the CPU state clears immediately upon reset, independent of the clock.
+        \item Without it, a synchronous-only reset could allow a corrupted state to persist (undetected) till the clock edge atleast.
+    \end{itemize}
+\end{itemize}
+
+\section*{B) Load-Use Hazard $\rightarrow$ Stall}
+\begin{itemize}
+    \item \textbf{P1 (Happens when it must):} 
+    \begin{itemize}
+        \item Protects data dependencies between memory loads and immediate ALU uses.
+        \item Without it, the hazard detection unit could fail to recognize a dependency and let the pipeline continue.
+        \item This would manifest as the dependent instruction computing using stale register data instead of the newly loaded memory data.
+    \end{itemize}
+
+    \item \textbf{P1b (Freezes PC \& IF/ID):} 
+    \begin{itemize}
+        \item Prevents instruction fetch from advancing during a stall.
+        \item Without it, a broken stall signal could let the PC increment while the rest of the pipeline waits.
+        \item The CPU would skip instructions entirely.
+    \end{itemize}
+
+    \item \textbf{P2 (ID/EX clears to bubble):} 
+    \begin{itemize}
+        \item Injects a NOP to separate the stalled instruction from the executing load.
+        \item Without it, a stall might freeze the front half of the pipeline but fail to clear the ID/EX control signals.
+        \item The instruction currently sitting in ID/EX would execute twice, corrupting architectural state.
+    \end{itemize}
+
+    \item \textbf{P5 (Stalls exactly 1 cycle):} 
+    \begin{itemize}
+        \item Ensures pipeline efficiency by strictly bounding the load-use penalty.
+        \item Without it, a sticky hazard flag could cause a multi-cycle stall.
+        \item The CPU would freeze unnecessarily for multiple cycles on a single load-use hazard.
+    \end{itemize}
+\end{itemize}
+
+\section*{C) Pipeline Handoffs}
+\begin{itemize}
+    \item \textbf{P18 (PC updates correctly):} 
+    \begin{itemize}
+        \item Protects the fundamental sequential execution of the program.
+        \item Without it, the PC could skip or repeat addresses during normal operation.
+    \end{itemize}
+
+    \item \textbf{P3 (IF/ID frozen during stall):} 
+    \begin{itemize}
+        \item Makes sure the contents of the IF/ID remain forzen during stall
+        \item The currently stalled instruction would be overwritten and permanently lost.
+        \item P1b checks the control wires to make sure IF/ID is frozen but this checks the actual reg data against the previous clock cycle to gurantee it froze perfectly.
+    \end{itemize}
+
+    \item \textbf{P28 (IF/ID captures if no stall):} 
+    \begin{itemize}
+        \item Protects the normal propagation of fetched instructions.
+        \item Without it, a stuck stall flag could prevent new instructions from entering the pipeline.
+        \item While P3 checks that during a stall the regs are frozen this makes sure it captures the new data correctly if there is no stall.
+    \end{itemize}
+
+    \item \textbf{P25 (Data enters ID/EX if no hazard):} 
+    \begin{itemize}
+        \item Protects normal instruction flow from Decode to Execute.
+        \item Similar to previous, P2 made sure a bubble (NOP) is inserted un the case of stall and this gurantees its working if there is no stall
+    \end{itemize}
+
+    % \item \textbf{P34a (MEM to WB writes once):} 
+    % \begin{itemize}
+    %     \item Protects the processor from committing the same instruction multiple times
+    %     \item Without it, a stalling MEM stage could cause the WB stage to commit the same data multiple times.
+    %     \item The \texttt{wb\_done} signal would assert repeatedly for a single instruction, corrupting the commit trace.
+    % \end{itemize}
+\end{itemize}
+
+\section*{D) Backpressure}
+\begin{itemize}
+    \item \textbf{P42 (Req maintains value):} 
+    \begin{itemize}
+        \item Makes sure req maintains its valye until ready
+        \item Without it, the CPU could change the address or data midway through a wait state.
+        % \item The memory controller would receive a fragmented or corrupted write request.
+    \end{itemize}
+
+    \item \textbf{P43 (Mem stall freezes pipeline):} 
+    \begin{itemize}
+        \item Makes sure that a Mem stall correctly freezes the pipeline
+        \item Without it, IF, ID, and EX could advance while MEM is blocked.
+        \item Instructions currently in EX would overwrite the instruction stuck in MEM, destroying it.
+    \end{itemize}
+
+    \item \textbf{P44 (Pipeline not stalled forever):} 
+    \begin{itemize}
+        \item Protects the liveness of the processor against deadlocks.
+        % \item Without it, a broken memory controller or logic loop could hold the wait state indefinitely.
+        \item The \texttt{ready} signal would never assert, holding the wait state indefinitely.
+    \end{itemize}
+\end{itemize}
+
+\section*{E) Forwarding}
+\begin{itemize}
+    \item \textbf{P6 (Youngest older producer wins):} 
+    \begin{itemize}
+        \item Protects data dependency priorities when multiple stages hold valid data for the same register.
+        \item Without it, a double-data hazard could incorrectly prioritize MEM/WB over the newer EX/MEM data.
+        \item The ALU would compute using older, stale data instead of the most recent result.
+    \end{itemize}
+
+    \item \textbf{P38 (Live operand data correctness):} 
+    \begin{itemize}
+        \item Ensures that forwarding happens when it must and the data entering the ALU during forwarding = what the reg file would hold if we did not have the pipeline
+        \item Without it, a wiring bug could slip past where the multiplexer makes the correct decision, but pulls data from the wrong wire
+        % \item The property would fail because the ALU inputs diverge from the ideal, unpipelined register state.
+    \end{itemize}
+\end{itemize}
+
+\section*{F) Branch, Commits, and Memory}
+\begin{itemize}
+    \item \textbf{P8 (Flushing happens when it must):} 
+    \begin{itemize}
+        \item Protects the control flow logic from executing mispredicted instructions.
+        % \item Without it, the branch evaluator could detect a jump but fail to trigger the flush wire.
+        \item The two wrong-path instructions in IF and ID would incorrectly execute and commit.
+    \end{itemize}
+
+    \item \textbf{P8b (Flushed instr has no side effects):} 
+    \begin{itemize}
+        \item Protects the architectural state (reg/mem writes) from changing due to a flushed instr.
+        \item Without it, a flush could zero the instruction but leave \texttt{RegWrite} or \texttt{MemWrite} high.
+        \item A squashed instruction would still alter a register or write garbage to memory.
+    \end{itemize}
+
+    % \item \textbf{P34b (Commit happens exactly once):} 
+    % \begin{itemize}
+    %     \item Protects the instruction retirement cadence under backpressure.
+    %     \item Without it, a stalled memory instruction could trigger multiple commits while waiting for \texttt{ready}.
+    %     \item The scoreboard would flag a mismatch as the CPU commits the same instruction over multiple clock cycles.
+    % \end{itemize}
+
+    \item \textbf{P35 (Committed value comes from right source):} 
+    \begin{itemize}
+        \item Makes sure the final commit value always comes from the right source (ALU/mem)
+        \item Without it, a \texttt{lw} instruction could accidentally write ALU results, or an \texttt{add} could write memory data.
+        % \item The register file would update with fundamentally incorrect computation outputs.
+    \end{itemize}
+
+    % \item \textbf{P36 (Branch evaluated using forwarded data):} 
+    % \begin{itemize}
+    %     \item Protects data dependencies involving \texttt{JZ} branch evaluations.
+    %     \item Without it, the branch comparator could read stale register file data instead of forwarded EX/MEM data.
+    %     \item The CPU would branch (or fail to branch) based on outdated conditions, breaking control flow.
+    % \end{itemize}
+
+    \item \textbf{P39a (Right \$rs data to memory):} 
+    \begin{itemize}
+        \item Makes sure the right forwarded data is written to memeory
+        \item P38 protects forwarding to the ALU not memory.
+        \item A \texttt{sw} instruction would write stale or incorrect data into the memory.
+    \end{itemize}
+
+    \item \textbf{P39b (Store lands at right address):} 
+    \begin{itemize}
+        \item Protects memory addressing calculation.
+        \item Without it, an ALU bug could calculate the wrong offset for the memory write.
+        \item The CPU would overwrite unrelated data structures in RAM.
+    \end{itemize}
+
+    \item \textbf{P39c (No writes to RAM during stall):} 
+    \begin{itemize}
+        \item Protects data memory from writes while the pipeline waits.
+        \item Without it, \texttt{MemWrite} signal could stay turned on while the target memory address could randomly change during the freeze.
+        \item The processor would write invalid data across random memory addresses while frozen.
+    \end{itemize}
+\end{itemize}
+
+\section*{H) Environment \& Architectural Invariants}
+\begin{itemize}
+    \item \textbf{P51 (\$zero is immutable):} 
+    \begin{itemize}
+        \item Protects the MIPS architectural guarantee that register 0 cannot be altered.
+        \item Without it, a software instruction like \texttt{add \$0, \$1, \$2} could successfully change the hardware register.
+        \item Subsequent instructions reading \texttt{\$zero} would receive non-zero values.
+    \end{itemize}
+
+    \item \textbf{P40 (Write-through bypass):} 
+    \begin{itemize}
+        \item Protects against read-after-write hazards in the same clock cycle within the register file.
+        \item It is basically another "forwarding"
+        \item The ID stage would read stale data, requiring an unnecessary pipeline stall.
+    \end{itemize}
+
+    \item \textbf{P26 (Reading \$zero returns 0):} 
+    \begin{itemize}
+        \item Protects the output wires of the register file.
+        \item Without it, the register file could store 0 but physically output noise on the \texttt{\$zero} read port.
+        \item The ALU would receive garbage bits when attempting to use \texttt{\$zero}.
+    \end{itemize}
+
+    \item \textbf{P12 (PC is multiple of 4):} 
+    \begin{itemize}
+        \item Protects instruction alignment requirements.
+        \item Without it, a branch could calculate an unaligned address (e.g., \texttt{PC = 0x03}).
+        \item The instruction memory would return misaligned, corrupted instruction bits.
+    \end{itemize}
+
+    \item \textbf{A9 (PC bounded to IMEM):} 
+    \begin{itemize}
+        \item Protects the formal solver from testing impossible physical limits.
+        \item Without it, the solver could inject out-of-bounds addresses (this is an assumption, not an assertion).
+        \item The solver would falsely report a hardware bug when the PC exceeds physical memory bounds.
+    \end{itemize}
+
+    \item \textbf{P17 (Data accesses bounded to DMEM):} 
+    \begin{itemize}
+        \item Protects the memory array from out-of-bounds requests.
+        \item Without it, an ALU offset could cause a read/write beyond the top of memory.
+        \item The simulation would crash or return \texttt{X} (undefined) states.
+    \end{itemize}
+\end{itemize}
+
+\end{document}

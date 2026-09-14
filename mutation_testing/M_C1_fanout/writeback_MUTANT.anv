@@ -1,0 +1,32 @@
+import "types.anv"
+
+// ============================================================
+//  Writeback  --  WB stage
+//  Holds the MEM/WB pipeline register (mw_*).
+//  Fans the resolved write-back value out twice: to Decode (the
+//  architectural register write + read bypass) and to Execute
+//  (the MEM/WB forwarding level).
+// ============================================================
+
+proc Writeback(ep_in: right mem_wb_ch, ep_id: left wb_ch, ep_ex: left wb_ch) {
+    reg mw_alu   : logic[32];  reg mw_mdata : logic[32];
+    reg mw_dest  : logic[5];
+    reg mw_rw    : logic;      reg mw_m2r   : logic;
+
+    loop {
+        let in_d = recv ep_in.req >>
+
+        let wd = if *mw_m2r == 1'b1 { *mw_mdata } else { *mw_alu } >>
+        let dst = *mw_dest;
+        let we  = *mw_rw;
+
+        send ep_id.req(wb_update_t::{ write_data = wd; dest_reg = dst; reg_write = we }) >>
+        send ep_ex.req(wb_update_t::{ write_data = *mw_alu; dest_reg = dst; reg_write = we }) >>
+
+        set mw_alu   := in_d.alu_result;
+        set mw_mdata := in_d.mem_data;
+        set mw_dest  := in_d.dest_reg;
+        set mw_rw    := in_d.reg_write;
+        set mw_m2r   := in_d.mem_to_reg
+    }
+}

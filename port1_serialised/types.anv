@@ -1,0 +1,82 @@
+struct if_id_t {
+    pc : logic[32],
+    instr : logic[32]
+}
+
+struct id_ex_t {
+    pc : logic[32],
+    rd1 : logic[32],
+    rd2 : logic[32],
+    imm : logic[32],
+    addr21 : logic[32],
+    rs : logic[5],
+    rt : logic[5],
+    rd : logic[5],
+    alu_op : logic[4],
+    alu_src : logic,
+    reg_dst : logic,
+    mem_read : logic,
+    mem_write : logic,
+    reg_write : logic,
+    mem_to_reg : logic,
+    branch_zero : logic
+}
+
+struct ex_mem_t {
+    alu_result : logic[32],
+    write_data : logic[32],
+    dest_reg : logic[5],
+    mem_read : logic,
+    mem_write : logic,
+    reg_write : logic,
+    mem_to_reg : logic
+}
+
+struct mem_wb_t {
+    alu_result : logic[32],
+    mem_data : logic[32],
+    dest_reg : logic[5],
+    reg_write : logic,
+    mem_to_reg : logic
+}
+
+struct wb_update_t {
+    write_data : logic[32],
+    dest_reg : logic[5],
+    reg_write : logic
+}
+
+struct branch_update_t {
+    branch_taken : logic,
+    branch_target : logic[32]
+}
+
+chan if_id_ch {
+    right req : (if_id_t @ res),
+    left res : (logic @ req)
+}
+
+chan id_ex_ch {
+    right req : (id_ex_t @ res),
+    left res : (logic @ req)
+}
+
+chan ex_mem_ch {
+    right req : (ex_mem_t @ res),
+    left res : (logic @ req)
+}
+
+chan mem_wb_ch {
+    right req : (mem_wb_t @ res),
+    left res : (logic @ req)
+}
+
+chan wb_id_ch {
+    right req : (wb_update_t @ res),
+    left res : (logic @ req)
+}
+
+chan branch_ch {
+    right req : (branch_update_t @ res),
+    left res : (logic @ req)
+}

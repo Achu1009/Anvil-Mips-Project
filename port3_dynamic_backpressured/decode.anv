@@ -1,0 +1,134 @@
+import "types.anv"
+
+// ============================================================
+//  Decode  --  ID stage
+//  Holds the IF/ID pipeline register (ifid_*) and the register file,
+//  and contains the LOAD-USE HAZARD DETECTOR.  sh_mem_read / sh_rt
+//  shadow the id_ex bundle sent last round, which is exactly what
+//  Execute has registered now, so the detector needs no channel.
+//
+//  Two different stalls meet in this file and they are NOT the same
+//  mechanism:
+//
+//   * LOAD-USE is a BUBBLE.  `hz` holds IF/ID and kills the outgoing
+//     id_ex bundle.  The blockage is upstream, the back of the pipe
+//     drains, and this stays ordinary combinational control -- word
+//     for word what mips_pipeline_processor.sv does.
+//
+//   * MEMORY is a FREEZE, and it is not written anywhere in this
+//     file.  `send ep_out.req(...)` simply does not complete until
+//     Execute takes the bundle, and Execute cannot until Memory has
+//     finished its transaction.  There is no mem_stall signal to
+//     fan out and no `& ~mem_stall` qualifier to forget.
+//
+//  ROUND SHAPE.  Everything that is consumed at the END of the round
+//  is also RECEIVED at the end of the round, in the very cycle the
+//  pipeline advances.  That is what keeps the plain `@#1` lifetimes
+//  honest: the only value held across the stall is `w`, and it says
+//  so in its type.
+// ============================================================
+proc Decode(ep_in: right if_id_ch, ep_out: left id_ex_ch,
+            ep_wb: right wb_ch, ep_branch: right branch_ch, ep_stall: left stall_ch) {
+    reg regs        : logic[32][32];
+    reg ifid_pc     : logic[32];
+    reg ifid_instr  : logic[32];
+    reg ifid_valid  : logic;
+    reg sh_mem_read : logic;
+    reg sh_rt       : logic[5];
+
+    loop {
+        // HELD value: taken now, released with `done` at the end of
+        // the round.  Its `@done` lifetime is what lets it survive an
+        // arbitrarily long memory stall.
+        let w = recv ep_wb.upd >>
+
+        let instr = *ifid_instr;
+        let vld   = *ifid_valid;
+        let ipc   = *ifid_pc;
+
+        let opcode = instr[26+:6];
+        let funct  = instr[0+:6];
+        let rs = instr[21+:5];
+        let rt = instr[16+:5];
+        let rd = instr[11+:5];
+
+        let is_rtype = opcode == 6'b000000;
+        let is_lw    = opcode == 6'b100011;
+        let is_sw    = opcode == 6'b101011;
+        let is_jz    = opcode == 6'b000010;
+        let is_sub   = is_rtype & (funct == 6'b100010);
+
+        let uses_rs = is_rtype | is_lw | is_sw | is_jz;
+        let uses_rt = is_rtype | is_sw;
+
+        let sh_rt_v = *sh_rt;
+        let sh_nz   = sh_rt_v != 5'd0;
+        let m_rs    = uses_rs & (sh_rt_v == rs);
+        let m_rt    = uses_rt & (sh_rt_v == rt);
+        let hz      = *sh_mem_read & sh_nz & vld & (m_rs | m_rt);
+
+        let w_nz     = w.dest_reg != 5'd0;
+        let w_hit_rs = w.reg_write & w_nz & (w.dest_reg == rs);
+        let w_hit_rt = w.reg_write & w_nz & (w.dest_reg == rt);
+        let rf1 = *regs[rs];
+        let rf2 = *regs[rt];
+        let rd1 = if w_hit_rs == 1'b1 { w.write_data } else { rf1 } >>
+        let rd2 = if w_hit_rt == 1'b1 { w.write_data } else { rf2 } >>
+
+        let sign_bit = instr[15];
+        let imm16    = instr & 32'h0000FFFF;
+        let imm      = if sign_bit == 1'b1 { imm16 | 32'hFFFF0000 } else { imm16 } >>
+        let addr21   = instr & 32'h001FFFFF;
+
+        // Only the LOAD-USE bubble is applied here.  The branch flush
+        // of ID/EX is applied by Execute, which resolves the branch
+        // and therefore already has the signal -- see execute.anv.
+        let live    = if hz == 1'b1 { 1'b0 } else { vld } >>
+        let sent_mr = is_lw & live;
+
+        let do_wr = w.reg_write & w_nz;
+        let wdest = w.dest_reg;
+        let wdata = w.write_data;
+
+        // The stall broadcast is JOINED, never sequenced before the
+        // handoff: IF must not be waiting on ID while ID waits on IF.
+        // Every branch of a join has to take at least one cycle in
+        // Anvil, hence the trailing `cycle 1`.
+        { send ep_stall.upd(hz) >> cycle 1 } ;
+
+        // THE HANDOFF.  Blocks for the whole of a memory stall.
+        send ep_out.req(id_ex_t::{
+            rd1 = rd1; rd2 = rd2; imm = imm; addr21 = addr21;
+            rs = rs; rt = rt; rd = rd;
+            alu_sub     = is_sub;
+            alu_src     = is_lw | is_sw;
+            reg_dst     = is_rtype;
+            mem_read    = is_lw & live;
+            mem_write   = is_sw & live;
+            reg_write   = (is_rtype | is_lw) & live;
+            mem_to_reg  = is_lw;
+            branch_zero = is_jz & live;
+            valid       = live }) >>
+
+        // The pipeline is advancing NOW.  Sample the redirect, take
+        // the next IF/ID slot, release the write-back value, commit.
+        let b    = recv ep_branch.upd >>
+        let in_d = recv ep_in.req     >>
+
+        { send ep_wb.done(1'b1) >> cycle 1 } ;
+
+        let flush  = b.branch_taken;
+        let nxt_i0 = if flush == 1'b1 { 32'd0 } else { in_d.instr } >>
+        let nxt_v0 = if flush == 1'b1 { 1'b0 }  else { in_d.valid } >>
+        let nxt_i  = if hz == 1'b1 { instr } else { nxt_i0 } >>
+        let nxt_v  = if hz == 1'b1 { vld }   else { nxt_v0 } >>
+        let nxt_pc = if hz == 1'b1 { ipc }   else { in_d.pc } >>
+
+        if do_wr == 1'b1 { set regs[wdest] := wdata } else { cycle 1 };
+        set ifid_instr   := nxt_i;
+        set ifid_valid   := nxt_v;
+        set ifid_pc      := nxt_pc;
+        set sh_mem_read  := sent_mr;
+        set sh_rt        := rt
+    }
+}

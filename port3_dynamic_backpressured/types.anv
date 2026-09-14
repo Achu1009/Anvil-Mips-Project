@@ -1,0 +1,142 @@
+// ============================================================
+//  types.anv  --  Phase 2: backpressured 5-stage MIPS in Anvil
+//
+//  PHASE 1 (anvil_code_pipelined) put a STATIC contract on every
+//  inter-stage channel:
+//
+//      right req : (T @#1) @#1 - @#1
+//
+//  which is a compile-time promise that BOTH ends move exactly one
+//  item every cycle, for ever.  A variable-latency memory cannot
+//  keep that promise, so the contract itself has to go.
+//
+//  PHASE 2 drops the sync pattern from every channel.  With no
+//  `@a - @b` clause Anvil emits a full two-way handshake (valid +
+//  ack) and `send`/`recv` become BLOCKING rendezvous: the transfer
+//  happens on the first cycle both ends are ready, and neither end
+//  moves on until it does.  That single change *is* the freeze
+//  stall -- see README.md.
+//
+//  Lifetimes are the other half.  `@#1` says "good for the cycle of
+//  the exchange", which is enough for anything consumed the moment
+//  it arrives.  Two broadcasts (write-back, and the branch redirect
+//  into ID) are taken at the START of a round and consumed at its
+//  END -- possibly many cycles later once the memory stalls -- so
+//  they carry an explicit `done` release and a lifetime of `@done`.
+//  The compiler then FORCES the producer to hold the value stable
+//  for exactly as long as the consumer is still using it.
+// ============================================================
+
+struct if_id_t {
+    pc     : logic[32],
+    instr  : logic[32],
+    valid  : logic
+}
+
+struct id_ex_t {
+    rd1         : logic[32],
+    rd2         : logic[32],
+    imm         : logic[32],
+    addr21      : logic[32],
+    rs          : logic[5],
+    rt          : logic[5],
+    rd          : logic[5],
+    alu_sub     : logic,
+    alu_src     : logic,
+    reg_dst     : logic,
+    mem_read    : logic,
+    mem_write   : logic,
+    reg_write   : logic,
+    mem_to_reg  : logic,
+    branch_zero : logic,
+    valid       : logic
+}
+
+struct ex_mem_t {
+    alu_result : logic[32],
+    write_data : logic[32],
+    dest_reg   : logic[5],
+    mem_read   : logic,
+    mem_write  : logic,
+    reg_write  : logic,
+    mem_to_reg : logic
+}
+
+struct mem_wb_t {
+    alu_result : logic[32],
+    mem_data   : logic[32],
+    dest_reg   : logic[5],
+    reg_write  : logic,
+    mem_to_reg : logic
+}
+
+struct wb_update_t {
+    write_data : logic[32],
+    dest_reg   : logic[5],
+    reg_write  : logic
+}
+
+struct branch_update_t {
+    branch_taken  : logic,
+    branch_target : logic[32]
+}
+
+// The data-memory request bundle.  `addr` is a WORD index: dmem is
+// modelled as 256 x 32b, exactly as in anvil_code_pipelined.
+struct dmem_req_t {
+    addr  : logic[8],
+    wdata : logic[32],
+    we    : logic
+}
+
+// ---- pipeline advance channels -----------------------------------
+// No sync pattern => two-way handshake => blocking send/recv.
+// These four carry the backpressure: a `send` the next stage cannot
+// take yet IS a frozen pipeline register.
+chan if_id_ch  { right req : (if_id_t  @#1) }
+chan id_ex_ch  { right req : (id_ex_t  @#1) }
+chan ex_mem_ch { right req : (ex_mem_t @#1) }
+chan mem_wb_ch { right req : (mem_wb_t @#1) }
+
+// ---- the write-back broadcast: taken early, released late --------
+// `upd` is live from the exchange until the consumer sends `done`.
+// This is the one value in the design that is genuinely HELD across
+// a stall: ID and EX take it at the top of the round and are still
+// reading it when the round finally closes, an arbitrary number of
+// cycles later.
+//
+// It is also the Anvil spelling of "MEM/WB is FROZEN, not bubbled".
+// The type checker will not let Writeback disturb mw_* while EX is
+// still holding the MEM/WB bypass value.  In SystemVerilog that
+// obligation is a comment plus run-time assertion P43 (and getting
+// it wrong is mutant M25, which the end-to-end scoreboard does not
+// catch); here it is a compile error.
+chan wb_ch {
+    right upd  : (wb_update_t @done),
+    left  done : (logic @#1)
+}
+
+// ---- short-lived broadcasts --------------------------------------
+// Sampled in the very cycle the pipeline advances and consumed
+// immediately, so @#1 suffices and no release message is needed.
+chan branch_ch { right upd : (branch_update_t @#1) }
+chan stall_ch  { right upd : (logic           @#1) }
+
+// ---- the variable-latency data memory ----------------------------
+// The two lifetimes are mutually referencing, and between them they
+// state the whole protocol:
+//
+//   req  @resp -- the request is live from the exchange until the
+//                 response comes back, i.e. for the whole time the
+//                 transaction is IN FLIGHT.  This is exactly the
+//                 stability obligation data_memory.sv states in a
+//                 comment and mips_sva.sv checks at run time with
+//                 P42; in Anvil it is a property of the interface
+//                 type and is checked statically, at the requester.
+//   resp @#1   -- the loaded word is consumed in the cycle it comes
+//                 back, which is why data_memory.sv can hand it over
+//                 on the ready edge and drive X in between.
+chan dmem_ch {
+    left  req  : (dmem_req_t @resp),
+    right resp : (logic[32]  @#1)
+}

@@ -1,0 +1,76 @@
+import "types.anv"
+
+// ============================================================
+//  Execute  --  EX stage
+//  Holds the ID/EX pipeline register (ix_*).
+//  Contains the FORWARDING UNIT:
+//    EX/MEM level  <- fw_* , a shadow of what this process drove on
+//                     ex_mem last cycle (no channel needed)
+//    MEM/WB level  <- ep_wb, the same wb_update Writeback sends to
+//                     Decode, fanned out to EX
+//  Priority EX/MEM over MEM/WB, both gated on dest != $zero,
+//  matching forwarding_unit.sv exactly.
+// ============================================================
+
+proc Execute(ep_in: right id_ex_ch, ep_out: left ex_mem_ch, ep_wb: right wb_ch,
+             ep_br_if: left branch_ch, ep_br_id: left branch_ch) {
+    reg ix_rd1 : logic[32];  reg ix_rd2 : logic[32];
+    reg ix_imm : logic[32];  reg ix_addr21 : logic[32];
+    reg ix_rs : logic[5];    reg ix_rt : logic[5];   reg ix_rd : logic[5];
+    reg ix_alu_sub : logic;  reg ix_alu_src : logic; reg ix_reg_dst : logic;
+    reg ix_mem_read : logic; reg ix_mem_write : logic;
+    reg ix_reg_write : logic; reg ix_mem_to_reg : logic;
+    reg ix_branch_zero : logic;
+
+    reg fw_rd   : logic[5];
+    reg fw_data : logic[32];
+    reg fw_we   : logic;
+
+    loop {
+        let in_d = recv ep_in.req >>
+        let w    = recv ep_wb.req >>
+
+        let rs = *ix_rs;  let rt = *ix_rt;
+        let fwrd = *fw_rd;  let fwwe = *fw_we;  let fwdata = *fw_data;
+        let fw_nz = fwrd != 5'd0;
+        let w_nz  = w.dest_reg != 5'd0;
+
+        let a_ex = fwwe & fw_nz & (fwrd == rs);
+        let a_wb = w.reg_write & w_nz & (w.dest_reg == rs);
+        let opA0 = if a_wb == 1'b1 { w.write_data } else { *ix_rd1 } >>
+        let opA  = if a_ex == 1'b1 { fwdata }      else { opA0 }     >>
+
+        let b_ex = fwwe & fw_nz & (fwrd == rt);
+        let b_wb = w.reg_write & w_nz & (w.dest_reg == rt);
+        let opB0 = if b_wb == 1'b1 { w.write_data } else { *ix_rd2 } >>
+        let opB  = if b_ex == 1'b1 { fwdata }      else { opB0 }     >>
+
+        let alu_b = if *ix_alu_src == 1'b1 { *ix_imm } else { opB }        >>
+        let alu_r = if *ix_alu_sub == 1'b1 { opA - alu_b } else { opA + alu_b } >>
+        let dest  = if *ix_reg_dst == 1'b1 { *ix_rd }  else { rt }         >>
+
+        let a21    = *ix_addr21;
+        let btgt   = a21 shl 32'd2;
+        let btaken = *ix_branch_zero & (opA == 32'd0);
+
+        send ep_out.req(ex_mem_t::{
+            alu_result = alu_r; write_data = opB; dest_reg = dest;
+            mem_read   = *ix_mem_read;  mem_write  = *ix_mem_write;
+            reg_write  = *ix_reg_write; mem_to_reg = *ix_mem_to_reg }) >>
+        send ep_br_if.req(branch_update_t::{ branch_taken = btaken; branch_target = btgt }) >>
+        send ep_br_id.req(branch_update_t::{ branch_taken = btaken; branch_target = btgt }) >>
+
+        set fw_rd   := dest;
+        set fw_we   := *ix_reg_write;
+        set fw_data := alu_r;
+
+        set ix_rd1 := in_d.rd1;   set ix_rd2 := in_d.rd2;
+        set ix_imm := in_d.imm;   set ix_addr21 := in_d.addr21;
+        set ix_rs := in_d.rs;     set ix_rt := in_d.rt;   set ix_rd := in_d.rd;
+        set ix_alu_sub := in_d.alu_sub;   set ix_alu_src := in_d.alu_src;
+        set ix_reg_dst := in_d.reg_dst;
+        set ix_mem_read := in_d.mem_read; set ix_mem_write := in_d.mem_write;
+        set ix_reg_write := in_d.reg_write; set ix_mem_to_reg := in_d.mem_to_reg;
+        set ix_branch_zero := in_d.branch_zero
+    }
+}

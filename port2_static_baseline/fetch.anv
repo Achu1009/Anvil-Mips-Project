@@ -1,0 +1,47 @@
+import "types.anv"
+
+// ============================================================
+//  Fetch  --  IF stage
+//  Loop body is exactly one cycle (the trailing `set` group).
+//  Consumes: branch redirect (from EX), stall (from ID).
+//  Produces: if_id_t every cycle, without exception -- the
+//  @#1-@#1 contract makes that a compile-time obligation.
+// ============================================================
+proc Fetch(ep_out: left if_id_ch, ep_branch: right branch_ch, ep_stall: right stall_ch) {
+    reg pc        : logic[32];
+    reg imem      : logic[256][32];
+    reg init_done : logic;
+
+    loop {
+        let b     = recv ep_branch.req >>
+        let stall = recv ep_stall.req  >>
+
+        let booted = *init_done;
+        let p      = *pc;
+        let raw    = *imem[p[2+:8]];
+
+        // cycle 0 loads imem; the slot issued that cycle is marked invalid
+        let instr = if booted == 1'b1 { raw }  else { 32'd0 } >>
+        let vld   = if booted == 1'b1 { 1'b1 } else { 1'b0 }  >>
+
+        send ep_out.req(if_id_t::{ pc = p; instr = instr; valid = vld }) >>
+
+        // next-PC priority: boot hold > branch redirect > load-use stall > pc+4
+        let held = if stall == 1'b1 { p } else { p + 32'd4 }                   >>
+        let brn  = if b.branch_taken == 1'b1 { b.branch_target } else { held } >>
+        let np   = if booted == 1'b0 { p } else { brn }                        >>
+
+        // gated: imem is a ROM after boot, so only write it on the boot cycle
+        if booted == 1'b0 {
+            set imem[0] := 32'h8C010000;
+            set imem[1] := 32'h00201020;
+            set imem[2] := 32'h00411022;
+            set imem[3] := 32'h08400005;
+            set imem[4] := 32'h00411820;
+            set imem[5] := 32'h00412020;
+            set imem[6] := 32'hAC810000
+        } else { cycle 1 };
+        set init_done := 1'b1;
+        set pc := np
+    }
+}

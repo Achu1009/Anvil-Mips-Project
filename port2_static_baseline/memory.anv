@@ -1,0 +1,44 @@
+import "types.anv"
+
+// ============================================================
+//  Memory  --  MEM stage
+//  Holds the EX/MEM pipeline register (em_*).
+//  The dmem init value is folded into the single write port rather
+//  than costing its own cycle, so the @#1 cadence is never broken.
+// ============================================================
+
+proc Memory(ep_in: right ex_mem_ch, ep_out: left mem_wb_ch) {
+    reg dmem      : logic[256][32];
+    reg init_done : logic;
+    reg em_alu    : logic[32];  reg em_wdata : logic[32];
+    reg em_dest   : logic[5];
+    reg em_mw     : logic;      reg em_rw : logic;  reg em_m2r : logic;
+
+    loop {
+        let in_d = recv ep_in.req >>
+
+        let booted = *init_done;
+        let a      = *em_alu;
+        let addr   = a[2+:8];
+        let mdata  = *dmem[addr];
+
+        send ep_out.req(mem_wb_t::{
+            alu_result = a; mem_data = mdata; dest_reg = *em_dest;
+            reg_write  = *em_rw; mem_to_reg = *em_m2r }) >>
+
+        let wen   = *em_mw;
+        let do_w  = if booted == 1'b0 { 1'b1 } else { wen } >>
+        let waddr = if booted == 1'b0 { 8'd0 }   else { addr }     >>
+        let wval  = if booted == 1'b0 { 32'd20 } else { *em_wdata } >>
+
+        // gated: dmem is written only on a real store (or the one boot cycle)
+        if do_w == 1'b1 { set dmem[waddr] := wval } else { cycle 1 };
+        set init_done   := 1'b1;
+        set em_alu   := in_d.alu_result;
+        set em_wdata := in_d.write_data;
+        set em_dest  := in_d.dest_reg;
+        set em_mw    := in_d.mem_write;
+        set em_rw    := in_d.reg_write;
+        set em_m2r   := in_d.mem_to_reg
+    }
+}

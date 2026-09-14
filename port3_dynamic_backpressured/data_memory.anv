@@ -1,0 +1,65 @@
+import "types.anv"
+
+// ============================================================
+//  DataMemory  --  the variable-latency data memory
+//  The Anvil counterpart of data_memory.sv.
+//
+//  data_memory.sv has to SAY what its interface guarantees, in a
+//  comment, and then mips_sva.sv has to CHECK it (P42: hold the
+//  request stable while in flight; P44: complete within MAX_STALL+1).
+//  Here the first obligation is discharged by the `@resp` lifetime on
+//  dmem_ch.req, statically, at the requester's expense; only the
+//  liveness bound (P44) still needs an assertion.
+//
+//  There is no `ready` output and no `req` input.  The handshake
+//  wires exist in the generated RTL, but they are the compiler's,
+//  not the designer's -- so `mem_stall = ~dmem_ready` (mutant M26)
+//  has no counterpart here to get wrong.
+//
+//  LATENCY MODEL: one cycle for the array access, plus 0..3 extra
+//  cycles taken from an LFSR and LATCHED at the start of the
+//  transaction so `resp` cannot jitter mid-flight.  Replace
+//  `f[0+:2]` with `2'd0` below for the fixed 1-cycle memory that
+//  reproduces the pre-backpressure cadence.
+// ============================================================
+// LATENCY KNOB.  `f[0+:2]` takes 0..3 extra cycles from the LFSR, the
+// Anvil equivalent of data_memory.sv's RANDOMISE=1.  Replace the body
+// with `2'd0` for the fixed, minimum-latency memory (RANDOMISE=0).
+func extra_latency(f) { f[0+:2] }
+
+proc DataMemory(ep : left dmem_ch) {
+    reg mem       : logic[256][32];
+    reg rdata     : logic[32];
+    reg lfsr      : logic[8];
+    reg dly       : logic[2];
+    reg init_done : logic;
+
+    loop {
+        if *init_done == 1'b0 {
+            // reset image: word 0 of dmem = 20, as in data_memory.sv
+            set mem[0]    := 32'd20;
+            set lfsr      := 8'hA5;
+            set init_done := 1'b1
+        } else {
+            let r = recv ep.req >>
+            let f = *lfsr;
+
+            // one cycle for the array: the store commits exactly once
+            // and the loaded word is latched, read-before-write, just
+            // as data_memory.sv does on its ready edge.
+            {
+                if r.we == 1'b1 { set mem[r.addr] := r.wdata } else { cycle 1 } ;
+                set rdata := *mem[r.addr] ;
+                set dly   := call extra_latency(f) ;
+                set lfsr  := #flat{ f[0+:7], (f[7+:1] ^ f[5+:1] ^ f[4+:1] ^ f[3+:1]) }
+            } >>
+
+            // 0..3 extra cycles, sampled once (see above)
+            let dv = *dly >>
+            if dv[1] == 1'b1 { cycle 2 } >>
+            if dv[0] == 1'b1 { cycle 1 } >>
+
+            send ep.resp(*rdata)
+        }
+    }
+}

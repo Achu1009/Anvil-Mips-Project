@@ -1,0 +1,42 @@
+import "types.anv"
+import "fetch.anv"
+import "decode.anv"
+import "execute.anv"
+import "memory.anv"
+import "data_memory.anv"
+import "writeback.anv"
+
+// ============================================================
+//  MipsPipelineBP  --  five stages overlapped, backpressured.
+//
+//  Eleven channels.  Ten of them are FULLY DYNAMIC (no sync pattern
+//  at all), so every send and every recv is a blocking rendezvous
+//  and Anvil generates the valid/ack pair itself.
+//
+//  There is exactly one place in the design that can take more than
+//  one cycle -- DataMemory -- and exactly one wire out of it that
+//  says so -- the compiler-generated ack on dmem_ch.  Everything
+//  else stalls because it is waiting on a rendezvous, not because
+//  someone remembered to fan a stall signal out to it.
+// ============================================================
+proc MipsPipelineBP() {
+    chan if_id_le  -- if_id_ri  : if_id_ch;
+    chan id_ex_le  -- id_ex_ri  : id_ex_ch;
+    chan ex_mem_le -- ex_mem_ri : ex_mem_ch;
+    chan mem_wb_le -- mem_wb_ri : mem_wb_ch;
+    chan wb_id_le  -- wb_id_ri  : wb_ch;
+    chan wb_ex_le  -- wb_ex_ri  : wb_ch;
+    chan br_if_le  -- br_if_ri  : branch_ch;
+    chan br_id_le  -- br_id_ri  : branch_ch;
+    chan stall_le  -- stall_ri  : stall_ch;
+    chan dmem_le   -- dmem_ri   : dmem_ch;
+
+    spawn Fetch(if_id_le, br_if_ri, stall_ri);
+    spawn Decode(if_id_ri, id_ex_le, wb_id_ri, br_id_ri, stall_le);
+    spawn Execute(id_ex_ri, ex_mem_le, wb_ex_ri, br_if_le, br_id_le);
+    spawn Memory(ex_mem_ri, mem_wb_le, dmem_ri);
+    spawn Writeback(mem_wb_ri, wb_id_le, wb_ex_le);
+    spawn DataMemory(dmem_le);
+
+    loop { cycle 1 }
+}

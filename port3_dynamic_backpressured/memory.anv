@@ -1,0 +1,61 @@
+import "types.anv"
+
+// ============================================================
+//  Memory  --  MEM stage
+//  Holds the EX/MEM pipeline register (em_*).  The array itself has
+//  moved out into DataMemory, behind a DYNAMIC channel, exactly as
+//  data_memory.sv moved it out from behind a req/ready interface.
+//
+//  This is where the variable latency enters the design, and it is
+//  the ONLY place in the whole port that knows about it.  There is
+//  no mem_stall wire, no freeze qualifier on the pipeline registers
+//  and no wb_done: `send ep_dm.req >> recv ep_dm.resp` blocks this
+//  process, which blocks Execute's handoff, which blocks Decode's,
+//  which blocks Fetch's.
+//
+//  `mem_read | mem_write` is live for the first time here, as it is
+//  in phase 1b: an idle memory is not asked for anything and so
+//  cannot stall anyone.  That is the Anvil counterpart of the
+//  `dmem_req &` term whose absence is mutant M26 -- and it is
+//  structural (no request is issued) rather than a term someone has
+//  to remember to write into a stall equation.
+// ============================================================
+proc Memory(ep_in: right ex_mem_ch, ep_out: left mem_wb_ch, ep_dm: right dmem_ch) {
+    reg em_alu   : logic[32];  reg em_wdata : logic[32];
+    reg em_dest  : logic[5];
+    reg em_mr    : logic;      reg em_mw : logic;
+    reg em_rw    : logic;      reg em_m2r : logic;
+
+    loop {
+        let a     = *em_alu;
+        let addr  = a[2+:8];
+        let is_m  = *em_mr | *em_mw;
+
+        // THE DYNAMIC TRANSACTION.  Blocking send, blocking recv.
+        // The `@resp` lifetime on dmem_ch.req makes "hold addr / we /
+        // wdata stable for the whole time the transaction is in
+        // flight" a compile-time obligation instead of assertion P42.
+        let rd = if is_m == 1'b1 {
+                     send ep_dm.req(dmem_req_t::{
+                         addr = addr; wdata = *em_wdata; we = *em_mw }) >>
+                     recv ep_dm.resp
+                 } else { 32'd0 } >>
+
+        // Publishing MEM/WB and taking the next EX/MEM bundle happen
+        // in the same instant -- the instant the pipeline advances --
+        // so they are JOINED, not sequenced.
+        { send ep_out.req(mem_wb_t::{
+              alu_result = a; mem_data = rd; dest_reg = *em_dest;
+              reg_write  = *em_rw; mem_to_reg = *em_m2r }) >> cycle 1 } ;
+
+        let in_d = recv ep_in.req >>
+
+        set em_alu   := in_d.alu_result;
+        set em_wdata := in_d.write_data;
+        set em_dest  := in_d.dest_reg;
+        set em_mr    := in_d.mem_read;
+        set em_mw    := in_d.mem_write;
+        set em_rw    := in_d.reg_write;
+        set em_m2r   := in_d.mem_to_reg
+    }
+}

@@ -1,0 +1,26 @@
+import "types.anv"
+import "fetch.anv"
+import "decode.anv"
+import "execute.anv"
+import "memory.anv"
+import "writeback.anv"
+
+proc MipsPipeline() {
+    chan if_id_le -- if_id_ri : if_id_ch;
+    chan id_ex_le -- id_ex_ri : id_ex_ch;
+    chan ex_mem_le -- ex_mem_ri : ex_mem_ch;
+    chan mem_wb_le -- mem_wb_ri : mem_wb_ch;
+    
+    chan wb_id_le -- wb_id_ri : wb_id_ch;
+    chan branch_le -- branch_ri : branch_ch;
+    
+    spawn Fetch(if_id_le, branch_ri);
+    spawn Decode(if_id_ri, id_ex_le, wb_id_ri);
+    spawn Execute(id_ex_ri, ex_mem_le, branch_le);
+    spawn Memory(ex_mem_ri, mem_wb_le);
+    spawn Writeback(mem_wb_ri, wb_id_le);
+
+    loop {
+        cycle 1
+    }
+}

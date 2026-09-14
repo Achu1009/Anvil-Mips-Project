@@ -1,0 +1,68 @@
+// ============================================================
+//  lifetime_limit.anv
+//
+//  Minimal reproducer for the one thing that stopped the Phase 2
+//  port from type-checking.  Compile each proc on its own:
+//
+//     anvil lifetime_limit.anv          -> fails on t_dynamic
+//     (comment out t_dynamic)           -> t_static compiles
+//
+//  THE RULE.  A value taken off a channel with a DYNAMIC contract
+//  cannot survive the next dynamic exchange in the same thread,
+//  whatever lifetime the contract declares.  A dynamic `send`/`recv`
+//  is an unbounded wait, and no `@#N` -- and, empirically, no
+//  `@msg` release either -- composes across it.
+//
+//  With STATIC contracts the same code shape is fine, because the
+//  exchange takes a statically known number of cycles and the
+//  lifetime arithmetic closes.
+//
+//  Consequence for a five-stage pipeline: a stage that has to
+//  consume MORE THAN ONE dynamically-arrived value in a round (IF
+//  needs the stall and the redirect; ID needs the write-back
+//  bundle, the redirect and the next IF/ID slot; EX needs the
+//  write-back bundle and the next ID/EX slot) cannot be written so
+//  that every lifetime closes, because the values do not all arrive
+//  on the same channel and Anvil's dependent sync modes (`@#msg+k`)
+//  can only anchor timing WITHIN one channel.
+// ============================================================
+
+chan dyn_in  { right req : (logic[32] @#1) }
+chan dyn_out { right req : (logic[32] @#1) }
+
+chan sta_in  { right req : (logic[32] @#1) @#1 - @#1 }
+chan sta_out { right req : (logic[32] @#1) @#1 - @#1 }
+
+// ---- REJECTED --------------------------------------------------
+//   Borrow checking failed:
+//   Value does not live long enough in reg assignment!
+proc DynStage(ei: right dyn_in, eo: left dyn_out) {
+    reg r : logic[32];
+    loop {
+        let x = recv ei.req >>   // arrives at some cycle T
+        send eo.req(32'd0) >>    // unbounded wait: completes at T+k, k unknown
+        set r := x               // x is only guaranteed at T
+    }
+}
+
+// ---- ACCEPTED --------------------------------------------------
+proc StaStage(ei: right sta_in, eo: left sta_out) {
+    reg r : logic[32];
+    loop {
+        let x = recv ei.req >>
+        send eo.req(32'd0) >>
+        set r := x
+    }
+}
+
+proc t_dynamic() {
+    chan a -- b : dyn_in;  chan c -- d : dyn_out;
+    spawn DynStage(b, c);
+    loop { cycle 1 }
+}
+
+proc t_static() {
+    chan a -- b : sta_in;  chan c -- d : sta_out;
+    spawn StaStage(b, c);
+    loop { cycle 1 }
+}
