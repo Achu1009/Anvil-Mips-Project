@@ -1,48 +1,18 @@
 #!/usr/bin/env bash
 #
-# run_all.sh -- one-command reproduction script (Rubric §6 entry point).
-#
-# Unified on Verilator for every stage. Stages 3-5 (all Anvil-side
-# simulation) build and run with `verilator --binary --timing` instead
-# of iverilog/vvp, and Stage 5 calls the Verilator-based equivalence
-# scripts (run_equivalence.py / run_equivalence_port3.py). Stage 1
-# (sv_baseline) was already Verilator-based; Stage 2 (SymbiYosys/
-# btormc, unrelated to either simulator) is unchanged. iverilog is no
-# longer required anywhere in this script.
-#
-# This project previously split the toolchain between Verilator
-# (Stage 1) and Icarus (Stages 3-5); that version is archived as
-# run_all_icarus.sh / equivalence/run_equivalence_icarus.py, kept as a
-# fallback. See README.md, "Verification Toolchain" for why the switch
-# was made: Verilator was confirmed, with real passing runs, to build
-# and simulate both port2_static_baseline's and
-# port3_dynamic_backpressured's machine-generated RTL cleanly, with no
-# combinational-loop failures on either port.
-#
-# Verified: stages 1, 3, 4, and 5 pass end-to-end through this script
-# against port2_static_baseline (`./run_all.sh --skip-formal --mutant`),
-# and stages 1, 3, 5 pass with `--port3` (`./run_all.sh --skip-formal
-# --port3 --mutant`, which prints stage 4's documented [SKIP] as
-# expected). Both validation runs used --skip-formal. Stage 2's code
-# is byte-for-byte identical to run_all_icarus.sh's own Stage 2 (diffed
-# to confirm) and was already separately verified passing via that
-# script; it has not yet been executed together with the rest through
-# this exact script in one run.
+# run_all.sh -- one-command reproduction of the SV/SVA baseline and the
+# Anvil port's headline results (Rubric §6).
 #
 # Default (no args): runs stages 1, 2, 3, and 5 (against port2_static_baseline).
-# Stage 4 (the M-C1 mutant) is OPT-IN -- pass --mutant to run it:
+# Stage 4 (the M-C1 mutant) is OPT-IN as of 2026-09-16 -- pass --mutant to run it:
 #   1. SV Baseline Simulation      (Verilator, sv_baseline/)
 #   2. SV Formal Verification      (SymbiYosys/btormc, sv_baseline/formal/)
-#   3. Anvil Compilation           (port2_static_baseline/, static @#1-@#1 port,
-#                                    verilator --binary, not iverilog)
+#   3. Anvil Compilation           (port2_static_baseline/, static @#1-@#1 port)
 #   4. Anvil M-C1 mutant           (mutation_testing/M_C1_fanout/, matches
 #                                    the writeback fan-out mutation) -- OPT-IN,
-#                                    see --mutant below; also verilator --binary
+#                                    see --mutant below
 #   5. Equivalence Test Suite      (equivalence/, 8 matched differential
-#                                    programs against both DUTs -- Rubric §3.3;
-#                                    runs run_equivalence.py /
-#                                    run_equivalence_port3.py, both
-#                                    Verilator-based)
+#                                    programs against both DUTs -- Rubric §3.3)
 #
 # Usage:
 #   ./run_all.sh [--skip-formal] [--only-anvil] [--port3] [--mutant] [--help]
@@ -52,13 +22,14 @@
 #   --only-anvil    Run only the Anvil-side stages -- compilation (3) and the
 #                    equivalence suite (5) by default, plus the M-C1 mutant
 #                    test (4) if --mutant is also passed. Skips both SV
-#                    stages, since none of these need SymbiYosys, only
-#                    verilator and the Anvil compiler.
+#                    stages, since none of these need Verilator or
+#                    SymbiYosys, only iverilog and the Anvil compiler.
 #   --mutant        Also run stage 4, the Anvil M-C1 mutant test (writeback
-#                    fan-out). Off by default, same as run_all.sh. Combined
-#                    with --port3: prints an explanatory [SKIP] instead of
-#                    running anything (see --port3 below for why), rather
-#                    than silently doing nothing.
+#                    fan-out). Off by default as of 2026-09-16 -- pass this
+#                    flag to include it. Combined with --port3: prints an
+#                    explanatory [SKIP] instead of running anything (see
+#                    --port3 below for why), rather than silently doing
+#                    nothing.
 #   --port3         Target port3_dynamic_backpressured (dynamic, backpressured
 #                    channels) instead of port2_static_baseline for stages 3
 #                    and 5. Stage 4, if requested via --mutant, is SKIPPED
@@ -75,19 +46,15 @@
 #   --help, -h      Show this message and exit.
 #
 # Requires on PATH: verilator, sby (SymbiYosys), yosys, z3 (or another
-# SymbiYosys-supported engine), python3, and an Anvil compiler binary
-# (see ANVIL below). NOTE: unlike the archived run_all_icarus.sh, iverilog
-# is NOT required
-# by this script -- every stage that used to need it now needs
-# verilator instead. Each stage checks for its own tools and is
-# skipped with a clear message if they are missing, rather than
-# aborting the whole run.
+# SymbiYosys-supported engine), iverilog, python3, and an Anvil compiler
+# binary (see ANVIL below). Each stage checks for its own tools and is
+# skipped with a clear message if they are missing, rather than aborting
+# the whole run.
 #
 # Env vars:
-#   ANVIL       Path to the Anvil compiler binary (default: "anvil" on PATH).
-#               Commit d138cab is the version this repo was tested against --
-#               see README.md, "Anvil Compiler Version".
-#   VERILATOR   Path to the verilator binary (default: "verilator" on PATH).
+#   ANVIL   Path to the Anvil compiler binary (default: "anvil" on PATH).
+#           Commit d138cab is the version this repo was tested against --
+#           see README.md, "Anvil Compiler Version".
 
 set -uo pipefail
 
@@ -99,7 +66,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 ANVIL=${ANVIL:-anvil}
-VERILATOR=${VERILATOR:-verilator}
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 LOG_DIR="$SCRIPT_DIR/run_all_logs/$TIMESTAMP"
 mkdir -p "$LOG_DIR"
@@ -149,7 +115,7 @@ record() { RESULTS+=("$1:$2"); }
 # ---------------------------------------------------------------------------
 
 print_help() {
-  sed -n '2,90p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,57p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # ---------------------------------------------------------------------------
@@ -172,7 +138,7 @@ for arg in "$@"; do
 done
 
 # ---------------------------------------------------------------------------
-# Stage 1 -- SV Baseline Simulation (Verilator) -- unchanged from run_all_icarus.sh
+# Stage 1 -- SV Baseline Simulation (Verilator)
 # ---------------------------------------------------------------------------
 
 stage_sv_sim() {
@@ -196,12 +162,12 @@ stage_sv_sim() {
            mips_sva_vlt.sv tb_mips_pipeline_processor.sv"
 
     echo "--- fixed-latency memory (LATENCY=1, RANDOMISE=0): the pre-backpressure baseline ---"
-    "$VERILATOR" --binary --timing --assert -Wno-fatal -o sim -GDMEM_LATENCY=1 -GDMEM_RANDOMISE=0 $FILES \
+    verilator --binary --timing --assert -Wno-fatal -o sim -GDMEM_LATENCY=1 -GDMEM_RANDOMISE=0 $FILES \
       && ./obj_dir/sim
 
     echo ""
     echo "--- randomised memory (LATENCY=3, RANDOMISE=1): backpressure exercised ---"
-    "$VERILATOR" --binary --timing --assert -Wno-fatal -o sim -GDMEM_LATENCY=3 -GDMEM_RANDOMISE=1 $FILES \
+    verilator --binary --timing --assert -Wno-fatal -o sim -GDMEM_LATENCY=3 -GDMEM_RANDOMISE=1 $FILES \
       && ./obj_dir/sim
   ) 2>&1 | tee "$log"
 
@@ -219,8 +185,7 @@ stage_sv_sim() {
 }
 
 # ---------------------------------------------------------------------------
-# Stage 2 -- SV Formal Verification (SymbiYosys / btormc) -- unchanged from
-# run_all.sh; not part of the iverilog/verilator toolchain either way.
+# Stage 2 -- SV Formal Verification (SymbiYosys / btormc)
 # ---------------------------------------------------------------------------
 
 stage_sv_formal() {
@@ -267,25 +232,16 @@ stage_sv_formal() {
 }
 
 # ---------------------------------------------------------------------------
-# Stage 3 -- Anvil Compilation (port2_static_baseline / port3_dynamic_backpressured)
-#
-# verilator --binary --timing -Wno-fatal -Wno-TIMESCALEMOD --top-module tb
-# replaces iverilog -g2012 -o sim.vvp here; both tb_mips_pipelined.sv (port2)
-# and tb_mips_bp.sv (port3) declare `module tb;`, so --top-module tb pins a
-# deterministic binary at ./obj_dir/Vtb in every case below (Verilator's
-# default artifact name is "V" + the top module name -- no -o needed).
-# -Wno-TIMESCALEMOD is required here specifically because the Anvil-generated
-# RTL (mips_anvil_pipelined.sv / mips_anvil_bp*.sv) carries no `timescale
-# directive while the testbenches do; Icarus never cared, Verilator warns.
+# Stage 3 -- Anvil Compilation (port2_static_baseline)
 # ---------------------------------------------------------------------------
 
 stage_anvil_compile() {
   if [[ $PORT3 -eq 1 ]]; then
-    section "Stage 3: Anvil Compilation (port3_dynamic_backpressured, -disable-lt-checks, verilator --binary)"
+    section "Stage 3: Anvil Compilation (port3_dynamic_backpressured, -disable-lt-checks)"
 
     local missing=0
     need_tool "$ANVIL" "Anvil Compilation" || missing=1
-    need_tool "$VERILATOR" "Anvil Compilation" || missing=1
+    need_tool iverilog "Anvil Compilation" || missing=1
     if [[ $missing -eq 1 ]]; then
       record "Anvil Compilation" "SKIP"; return
     fi
@@ -306,9 +262,8 @@ stage_anvil_compile() {
       echo ""
       echo "--- randomised memory (port3's default data_memory.anv) ---"
       "$ANVIL" -disable-lt-checks top.anv > mips_anvil_bp.sv \
-        && "$VERILATOR" --binary --timing -Wno-fatal -Wno-TIMESCALEMOD --top-module tb \
-             mips_anvil_bp.sv tb_mips_bp.sv \
-        && ./obj_dir/Vtb
+        && iverilog -g2012 -o sim_rand.vvp mips_anvil_bp.sv tb_mips_bp.sv \
+        && ./sim_rand.vvp
 
       echo ""
       echo "--- fixed-latency memory (extra_latency forced to 2'd0 -- the pre-backpressure cadence) ---"
@@ -316,9 +271,8 @@ stage_anvil_compile() {
       sed -i "s|func extra_latency(f) { f\[0+:2\] }|func extra_latency(f) { 2'd0 }|" "$tmp/data_memory.anv"
       ( cd "$tmp" && "$ANVIL" -disable-lt-checks top.anv ) > mips_anvil_bp_fixed.sv
       rm -rf "$tmp"
-      "$VERILATOR" --binary --timing -Wno-fatal -Wno-TIMESCALEMOD --top-module tb \
-           mips_anvil_bp_fixed.sv tb_mips_bp.sv \
-        && ./obj_dir/Vtb
+      iverilog -g2012 -o sim_fixed.vvp mips_anvil_bp_fixed.sv tb_mips_bp.sv \
+        && ./sim_fixed.vvp
     ) 2>&1 | tee "$log"
 
     if [[ ${PIPESTATUS[0]} -ne 0 ]]; then stage_ok=0; fi
@@ -340,11 +294,11 @@ stage_anvil_compile() {
     return
   fi
 
-  section "Stage 3: Anvil Compilation (port2_static_baseline, static @#1-@#1 contracts, verilator --binary)"
+  section "Stage 3: Anvil Compilation (port2_static_baseline, static @#1-@#1 contracts)"
 
   local missing=0
   need_tool "$ANVIL" "Anvil Compilation" || missing=1
-  need_tool "$VERILATOR" "Anvil Compilation" || missing=1
+  need_tool iverilog "Anvil Compilation" || missing=1
   if [[ $missing -eq 1 ]]; then
     record "Anvil Compilation" "SKIP"; return
   fi
@@ -361,9 +315,8 @@ stage_anvil_compile() {
     echo "--- compiling with every lifetime/borrow check on (no -disable-lt-checks) ---"
     "$ANVIL" top.anv > mips_anvil_pipelined.sv \
       && echo "compiled: $(wc -l < mips_anvil_pipelined.sv) lines of RTL" \
-      && "$VERILATOR" --binary --timing -Wno-fatal -Wno-TIMESCALEMOD --top-module tb \
-           mips_anvil_pipelined.sv tb_mips_pipelined.sv \
-      && ./obj_dir/Vtb
+      && iverilog -g2012 -o sim.vvp mips_anvil_pipelined.sv tb_mips_pipelined.sv \
+      && ./sim.vvp
   ) 2>&1 | tee "$log"
 
   if [[ ${PIPESTATUS[0]} -ne 0 ]]; then stage_ok=0; fi
@@ -389,12 +342,6 @@ stage_anvil_compile() {
 
 # ---------------------------------------------------------------------------
 # Stage 4 -- Anvil M-C1 mutant (writeback fan-out)
-#
-# Same verilator --binary --timing -Wno-fatal -Wno-TIMESCALEMOD --top-module tb
-# swap as Stage 3. baseline.sv/mut.sv (Anvil output) + tb_c1_checker.sv also
-# declare `module tb;`, so ./obj_dir/Vtb applies here too. Baseline and mutant
-# build in separate mktemp -d scratch dirs (same as run_all.sh), so their two
-# ./obj_dir/Vtb outputs never collide.
 # ---------------------------------------------------------------------------
 
 stage_anvil_mc1() {
@@ -405,11 +352,11 @@ stage_anvil_mc1() {
     return
   fi
 
-  section "Stage 4: Anvil M-C1 mutant (writeback.anv fan-out, mutation_testing/M_C1_fanout, verilator --binary)"
+  section "Stage 4: Anvil M-C1 mutant (writeback.anv fan-out, mutation_testing/M_C1_fanout)"
 
   local missing=0
   need_tool "$ANVIL" "Anvil M-C1 mutant" || missing=1
-  need_tool "$VERILATOR" "Anvil M-C1 mutant" || missing=1
+  need_tool iverilog "Anvil M-C1 mutant" || missing=1
   if [[ $missing -eq 1 ]]; then
     record "Anvil M-C1 mutant" "SKIP"; return
   fi
@@ -437,18 +384,16 @@ stage_anvil_mc1() {
     echo "--- baseline: expect C1 fired 0 times, scoreboard: PASS ---"
     cd "$WORKDIR/baseline"
     "$ANVIL" top.anv > baseline.sv \
-      && "$VERILATOR" --binary --timing -Wno-fatal -Wno-TIMESCALEMOD --top-module tb \
-           baseline.sv tb_c1_checker.sv \
-      && ./obj_dir/Vtb
+      && iverilog -g2012 -o b.vvp baseline.sv tb_c1_checker.sv \
+      && ./b.vvp
 
     echo ""
     echo "--- mutant: expect C1 VIOLATION, C1 fired 1 times, scoreboard: FAIL ---"
     cd "$WORKDIR/mut"
     "$ANVIL" top.anv > mut.sv \
       && echo "mutant compiled: success (this is the point -- Anvil accepts it)" \
-      && "$VERILATOR" --binary --timing -Wno-fatal -Wno-TIMESCALEMOD --top-module tb \
-           mut.sv tb_c1_checker.sv \
-      && ./obj_dir/Vtb
+      && iverilog -g2012 -o m.vvp mut.sv tb_c1_checker.sv \
+      && ./m.vvp
   ) 2>&1 | tee "$log"
 
   if [[ ${PIPESTATUS[0]} -ne 0 ]]; then stage_ok=0; fi
@@ -482,33 +427,28 @@ stage_anvil_mc1() {
 
 # ---------------------------------------------------------------------------
 # Stage 5 -- Equivalence Test Suite (8 matched differential programs)
-#
-# Calls the Verilator-based equivalence scripts (run_equivalence.py /
-# run_equivalence_port3.py). Those scripts invoke verilator internally,
-# not iverilog. See equivalence/run_equivalence_icarus.py for the
-# archived Icarus-based predecessor.
 # ---------------------------------------------------------------------------
 
 stage_equivalence() {
   if [[ $PORT3 -eq 1 ]]; then
-    section "Stage 5: Equivalence Test Suite (equivalence/, port3_dynamic_backpressured, 8 matched programs, fixed-latency memory only, verilator-only)"
+    section "Stage 5: Equivalence Test Suite (equivalence/, port3_dynamic_backpressured, 8 matched programs, fixed-latency memory only)"
 
     local missing=0
     need_tool "$ANVIL" "Equivalence Test Suite" || missing=1
-    need_tool "$VERILATOR" "Equivalence Test Suite" || missing=1
+    need_tool iverilog "Equivalence Test Suite" || missing=1
     need_tool python3 "Equivalence Test Suite" || missing=1
     if [[ $missing -eq 1 ]]; then
       record "Equivalence Test Suite" "SKIP"; return
     fi
-    if [[ ! -f equivalence/run_equivalence_port3.py ]]; then
-      fail "equivalence/run_equivalence_port3.py not found"
+    if [[ ! -f equivalence/run_equivalence_port3_trial.py ]]; then
+      fail "equivalence/run_equivalence_port3_trial.py not found"
       record "Equivalence Test Suite" "FAIL"; return
     fi
 
     local log="$LOG_DIR/05_equivalence.log"
     local stage_ok=1
 
-    ANVIL="$ANVIL" VERILATOR="$VERILATOR" python3 equivalence/run_equivalence_port3.py 2>&1 | tee "$log"
+    ANVIL="$ANVIL" python3 equivalence/run_equivalence_port3_trial.py 2>&1 | tee "$log"
     if [[ ${PIPESTATUS[0]} -ne 0 ]]; then stage_ok=0; fi
     grep -q "ALL PROGRAMS ARCHITECTURALLY MATCH" "$log" || stage_ok=0
 
@@ -522,11 +462,11 @@ stage_equivalence() {
     return
   fi
 
-  section "Stage 5: Equivalence Test Suite (equivalence/, 8 matched programs, verilator-only)"
+  section "Stage 5: Equivalence Test Suite (equivalence/, 8 matched programs)"
 
   local missing=0
   need_tool "$ANVIL" "Equivalence Test Suite" || missing=1
-  need_tool "$VERILATOR" "Equivalence Test Suite" || missing=1
+  need_tool iverilog "Equivalence Test Suite" || missing=1
   need_tool python3 "Equivalence Test Suite" || missing=1
   if [[ $missing -eq 1 ]]; then
     record "Equivalence Test Suite" "SKIP"; return
@@ -539,7 +479,7 @@ stage_equivalence() {
   local log="$LOG_DIR/05_equivalence.log"
   local stage_ok=1
 
-  ANVIL="$ANVIL" VERILATOR="$VERILATOR" python3 equivalence/run_equivalence.py 2>&1 | tee "$log"
+  ANVIL="$ANVIL" python3 equivalence/run_equivalence.py 2>&1 | tee "$log"
   if [[ ${PIPESTATUS[0]} -ne 0 ]]; then stage_ok=0; fi
   grep -q "ALL PROGRAMS MATCH" "$log" || stage_ok=0
 
@@ -556,7 +496,7 @@ stage_equivalence() {
 # Run
 # ---------------------------------------------------------------------------
 
-echo "${C_BOLD}run_all.sh${C_RESET} -- Verilator toolchain -- logs in: $LOG_DIR"
+echo "${C_BOLD}run_all.sh${C_RESET} -- logs in: $LOG_DIR"
 [[ $RUN_SV_SIM -eq 0 ]]        && echo "  (SV Baseline Simulation skipped)"
 [[ $RUN_SV_FORMAL -eq 0 ]]     && echo "  (SV Formal Verification skipped)"
 [[ $RUN_ANVIL_MC1 -eq 0 ]]     && echo "  (Anvil M-C1 mutant (stage 4) not run by default -- pass --mutant to include it)"

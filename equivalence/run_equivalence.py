@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """
-run_equivalence.py -- the Part C equivalence test suite.
+run_equivalence.py -- the Part C equivalence test suite (Rubric §3.3),
+used by run_all.sh's Stage 5.
+
+Verilator-based: drives both the SV baseline and the Anvil-generated
+RTL through Verilator, unified with the rest of the toolchain (Stage 1
+was already Verilator-based). The prior Icarus-based version (which
+this replaced after confirming Verilator handles both Anvil ports
+cleanly, with no combinational-loop failures) is archived as
+run_equivalence_icarus.py -- see README.md, "Verification Toolchain".
 
 Drives the SV baseline (sv_baseline/mips_pipeline_processor.sv,
-LATENCY=1/RANDOMISE=0 -- the config that reproduces the original
-single-cycle-memory baseline bit-for-bit) and the Anvil port
-(port2_static_baseline/, the static @#1-@#1 1-IPC design) with the same 8
-matched programs from assemble.py, and checks that they agree on:
+LATENCY=1/RANDOMISE=0) and the Anvil port (port2_static_baseline/, the
+static @#1-@#1 1-IPC design) with the same 8 matched programs from
+assemble.py, and checks that they agree on:
 
   * the PC trace (which cycle the PC changes, and to what) -- this is
     the stall/squash-timing check: any divergence here means the two
@@ -16,12 +23,62 @@ matched programs from assemble.py, and checks that they agree on:
     has drained;
   * the first 16 words of data memory after the program has drained.
 
-Usage:
-    python3 run_equivalence.py [--anvil PATH] [--keep]
+What changed vs. run_equivalence.py (Icarus -> Verilator), and why:
 
-Env var ANVIL is honoured the same way run_all.sh's is (default: "anvil"
-on PATH). --keep preserves the per-program scratch directories for
-inspection instead of deleting them.
+  * Build: `iverilog -g2012 -o sim.vvp <files>` becomes
+    `verilator --binary --timing -Wno-fatal -Wno-TIMESCALEMOD
+    --top-module <top> <files>`.
+      - `--binary` tells Verilator to build a standalone executable
+        (verilate + a `make` C++ build) in one invocation, instead of
+        emitting a .vvp bytecode file for a separate `vvp` step.
+      - `--timing` is required because both testbenches use real delay
+        controls (`#20ns`, `#CLK_HALF`, `#1`) -- without it Verilator
+        rejects those as unsupported.
+      - `-Wno-fatal` keeps Verilator from erroring out on lint/style
+        warnings (Verilator is far stricter than Icarus about things
+        like implicit widths); we care about functional correctness
+        here, not lint cleanliness, especially for Anvil-generated RTL
+        we don't control the style of.
+      - `-Wno-TIMESCALEMOD` silences the "timescale missing on some
+        modules" warning that's near-guaranteed once Anvil-generated
+        RTL (no `timescale directive) is compiled alongside our
+        `timescale`-carrying testbenches.
+      - `--top-module <top>` pins the top module explicitly rather
+        than relying on Verilator's auto-detection, so the output
+        binary's name (and thus the path we exec next) is
+        deterministic. See verilate() below.
+  * Run: instead of `./sim.vvp` (executed via the `vvp` bytecode
+    interpreter), we exec the compiled binary directly:
+    `./obj_dir/V<top-module>` (Verilator's default artifact naming:
+    "V" + the top module name). No `vvp` involved at all.
+  * Parsing: parse_trace() and the PCTRACE/REG/DMEM/DONE regexes
+    themselves are UNCHANGED -- they match the testbenches' own
+    $display output line-by-line and already skip any line that
+    doesn't match, so they tolerate whatever extra text a simulator
+    prints around it. What *does* differ is what can show up around
+    that output with Verilator: (1) $finish under Verilator can emit a
+    "- <file>:<line>: Verilog $finish" notice on stderr (Icarus/vvp
+    prints nothing for a plain $finish), and (2) with -Wno-fatal,
+    lint warnings from the *build* step land in that step's own
+    stdout/stderr, not the run's. Since run()'s stdout+stderr for the
+    *compile* step is only logged (never regex-parsed) and the *run*
+    step's output is parsed line-by-line with skip-on-no-match, none
+    of this actually requires touching parse_trace()'s regexes -- but
+    see strip_verilator_finish_notice() below, added so the DONE/log
+    output stays as close to the Icarus shape as possible, and
+    extract_verilator_error() for turning a compile failure's terminal
+    output into a useful one-line reason (Icarus's compile-error shape
+    was never parsed either, but Verilator's `%Error:` shape is common
+    enough, and informative enough, that surfacing it beats "compile
+    failed" alone).
+
+Usage:
+    python3 run_equivalence.py [--anvil PATH] [--verilator PATH] [--keep]
+
+Env vars ANVIL and VERILATOR are honoured the same way run_all.sh's
+ANVIL is (defaults: "anvil" and "verilator" on PATH respectively).
+--keep preserves the per-program scratch directories for inspection
+instead of deleting them.
 
 Exit code is 0 iff every program matches on all three checks.
 """
@@ -72,6 +129,60 @@ def run(cmd, cwd, log):
     return r.returncode == 0, r.stdout + r.stderr
 
 
+# Verilator's %Error:/%Warning-XXX: lines (the latter only fatal without
+# -Wno-fatal) -- used only to pull a short, useful reason out of a failed
+# compile's log; Icarus's compile-error shape was never parsed here either,
+# this is new, not a port of something that existed before.
+VERILATOR_ERROR_RE = re.compile(r"^%Error[-\w]*:.*$", re.MULTILINE)
+
+# Verilator's own notice for a plain $finish (goes to stderr; Icarus/vvp
+# prints nothing at all for $finish). Never matches PCTRACE/REG/DMEM/DONE,
+# so parse_trace() doesn't strictly need this -- kept separate so logs
+# read the same shape as the Icarus-based script's, and so it's obvious
+# in one place what Verilator adds that Icarus didn't.
+VERILATOR_FINISH_NOTICE_RE = re.compile(r"^- .*: Verilog \$finish\s*$", re.MULTILINE)
+
+
+def extract_verilator_error(text):
+    """Pull the first %Error: line out of a failed Verilator build's
+    output, for a more useful "compile failed" reason than Icarus's
+    equivalent (which was never parsed either, but Verilator's errors
+    are common enough and specific enough to be worth surfacing)."""
+    m = VERILATOR_ERROR_RE.search(text)
+    return m.group(0).strip() if m else None
+
+
+def strip_verilator_finish_notice(text):
+    """Drop Verilator's "- file:line: Verilog $finish" stderr notice
+    before logging/inspecting run output, so what's left reads like the
+    Icarus/vvp shape (which prints nothing for a plain $finish). Purely
+    cosmetic for humans reading the log -- parse_trace() already ignores
+    this line on its own since it matches none of the trace regexes."""
+    return VERILATOR_FINISH_NOTICE_RE.sub("", text).strip()
+
+
+def verilate(files, top, d, log, verilator_bin):
+    """Build `files` with Verilator (--binary --timing), top module
+    pinned explicitly so the output binary's path is deterministic, then
+    return (ok, err_msg, binary_path). Mirrors what
+    `iverilog -g2012 -o sim.vvp <files>` used to do in one shot: this is
+    ALSO one shot (verilate + the internal `make`/g++ build), just a
+    different tool with a different output shape (an ELF binary under
+    obj_dir/, not a .vvp bytecode file)."""
+    ok, out = run(
+        [verilator_bin, "--binary", "--timing", "-Wno-fatal", "-Wno-TIMESCALEMOD",
+         "--top-module", top] + files,
+        d, log)
+    if not ok:
+        reason = extract_verilator_error(out) or "verilator compile failed"
+        return False, reason, None
+
+    binary = os.path.join(d, "obj_dir", f"V{top}")
+    if not os.path.isfile(binary):
+        return False, f"verilator reported success but {binary!r} is missing", None
+    return True, None, binary
+
+
 def parse_trace(text):
     pctrace = []
     regs = {}
@@ -92,7 +203,7 @@ def parse_trace(text):
     return pctrace, regs, dmem
 
 
-def run_sv(prog, scratch, anvil_bin, log):
+def run_sv(prog, scratch, anvil_bin, verilator_bin, log):
     d = os.path.join(scratch, "sv")
     os.makedirs(d)
     for f in ["mips_pkg.sv", "instruction_decode.sv", "register_file.sv",
@@ -104,19 +215,22 @@ def run_sv(prog, scratch, anvil_bin, log):
         "// __IMEM_PROGRAM__", sv_imem_lines(prog),
         os.path.join(d, "instruction_fetch.sv"))
 
-    ok, out = run(["iverilog", "-g2012", "-o", "sim.vvp",
-                    "mips_pkg.sv", "instruction_fetch.sv", "instruction_decode.sv",
-                    "register_file.sv", "forwarding_unit.sv", "data_memory.sv",
-                    "mips_pipeline_processor.sv", "tb_equiv_sv.sv"], d, log)
+    ok, err, binary = verilate(
+        ["mips_pkg.sv", "instruction_fetch.sv", "instruction_decode.sv",
+         "register_file.sv", "forwarding_unit.sv", "data_memory.sv",
+         "mips_pipeline_processor.sv", "tb_equiv_sv.sv"],
+        "tb_equiv_sv", d, log, verilator_bin)
     if not ok:
-        return False, "compile failed", None
-    ok, out = run(["./sim.vvp"], d, log)
+        return False, err, None
+
+    ok, out = run([binary], d, log)
+    out = strip_verilator_finish_notice(out)
     if not ok or "DONE" not in out:
         return False, "simulation failed", None
     return True, None, out
 
 
-def run_anvil(prog, scratch, anvil_bin, log):
+def run_anvil(prog, scratch, anvil_bin, verilator_bin, log):
     d = os.path.join(scratch, "anvil")
     os.makedirs(d)
     for f in ["decode.anv", "execute.anv", "memory.anv", "writeback.anv",
@@ -139,11 +253,14 @@ def run_anvil(prog, scratch, anvil_bin, log):
         return False, "anvil compile produced no RTL", None
     open(os.path.join(d, "mips_anvil_pipelined.sv"), "w").write(r.stdout)
 
-    ok, out = run(["iverilog", "-g2012", "-o", "sim.vvp",
-                    "mips_anvil_pipelined.sv", "tb_equiv_anvil.sv"], d, log)
+    ok, err, binary = verilate(
+        ["mips_anvil_pipelined.sv", "tb_equiv_anvil.sv"],
+        "tb_equiv_anvil", d, log, verilator_bin)
     if not ok:
-        return False, "iverilog compile failed", None
-    ok, out = run(["./sim.vvp"], d, log)
+        return False, err, None
+
+    ok, out = run([binary], d, log)
+    out = strip_verilator_finish_notice(out)
     if not ok or "DONE" not in out:
         return False, "simulation failed", None
     return True, None, out
@@ -194,13 +311,18 @@ def compare(sv_out, anvil_out):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--anvil", default=os.environ.get("ANVIL", "anvil"))
+    ap.add_argument("--verilator", default=os.environ.get("VERILATOR", "verilator"))
     ap.add_argument("--keep", action="store_true")
     args = ap.parse_args()
 
+    # Separate log dir from the Icarus-based run_equivalence.py's
+    # equivalence_logs/, so a run of this experimental script never
+    # clobbers the real Stage 5's logs.
     log_dir = os.path.join(HERE, "equivalence_logs")
     os.makedirs(log_dir, exist_ok=True)
 
     all_ok = True
+    print("*** Verilator toolchain (no iverilog/vvp anywhere) ***")
     print(f"{'program':<22} {'SV':<8} {'Anvil':<8} {'result'}")
     print("-" * 70)
 
@@ -208,8 +330,8 @@ def main():
         scratch = tempfile.mkdtemp(prefix=f"equiv_{name}_")
         log_path = os.path.join(log_dir, f"{name}.log")
         with open(log_path, "w") as log:
-            sv_ok, sv_err, sv_out = run_sv(prog, scratch, args.anvil, log)
-            an_ok, an_err, an_out = run_anvil(prog, scratch, args.anvil, log)
+            sv_ok, sv_err, sv_out = run_sv(prog, scratch, args.anvil, args.verilator, log)
+            an_ok, an_err, an_out = run_anvil(prog, scratch, args.anvil, args.verilator, log)
 
             if not sv_ok or not an_ok:
                 result = f"FAIL ({sv_err or ''} {an_err or ''})".strip()
