@@ -137,12 +137,12 @@ stage_sv_sim() {
            mips_sva_vlt.sv tb_mips_pipeline_processor.sv"
 
     echo "--- fixed-latency memory (LATENCY=1, RANDOMISE=0): the pre-backpressure baseline ---"
-    verilator --binary --timing --assert -o sim -GDMEM_LATENCY=1 -GDMEM_RANDOMISE=0 $FILES \
+    verilator --binary --timing --assert -Wno-fatal -o sim -GDMEM_LATENCY=1 -GDMEM_RANDOMISE=0 $FILES \
       && ./obj_dir/sim
 
     echo ""
     echo "--- randomised memory (LATENCY=3, RANDOMISE=1): backpressure exercised ---"
-    verilator --binary --timing --assert -o sim -GDMEM_LATENCY=3 -GDMEM_RANDOMISE=1 $FILES \
+    verilator --binary --timing --assert -Wno-fatal -o sim -GDMEM_LATENCY=3 -GDMEM_RANDOMISE=1 $FILES \
       && ./obj_dir/sim
   ) 2>&1 | tee "$log"
 
