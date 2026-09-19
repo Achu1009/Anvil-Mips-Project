@@ -30,7 +30,7 @@ for it in range(12):
         else:
             print("ENGINE PROBLEM:", re.findall(r"ERROR.*", log)[:3])
         break
-    order = re.findall(r"bad \d+ (a_p\w+)", open("run/model/design_btor.btor").read())
+    order = re.findall(r"bad \d+ ([\w.]+)", open("run/model/design_btor.btor").read())  # FIXED 2026-09-17: was (a_p\w+), silently dropped hierarchical u_dmem.-prefixed properties, shifting every later index by 2
     for idx, k in hits:
         n = order[int(idx)]
         print("FAIL k=%-3s %s" % (k, n)); masked.append(n)

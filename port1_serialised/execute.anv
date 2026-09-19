@@ -1,21 +1,26 @@
 import "types.anv"
 
+// Execute stage. Performs the ALU op and resolves branches.
+// prev_b_taken/prev_b_target hold the branch outcome that Fetch should act
+// on this cycle; temp_b_taken/temp_b_target latch this cycle's freshly
+// computed outcome, which only becomes prev_* after this cycle's
+// handshakes with Memory, Decode and Fetch have all completed.
 proc Execute(ep_in: right id_ex_ch, ep_out: left ex_mem_ch, ep_branch: left branch_ch) {
     reg prev_b_taken : logic;
     reg prev_b_target : logic[32];
-    
+
     reg temp_b_taken : logic;
     reg temp_b_target : logic[32];
-    
+
     loop {
         let b_update = branch_update_t::{
             branch_taken = *prev_b_taken;
             branch_target = *prev_b_target
         } >>
         send ep_branch.req(b_update) >>
-        
+
         let in_data = recv ep_in.req >>
-        
+
         let in_rd1 = in_data.rd1;
         let in_rd2 = in_data.rd2;
         let in_imm = in_data.imm;
@@ -23,181 +28,45 @@ proc Execute(ep_in: right id_ex_ch, ep_out: left ex_mem_ch, ep_branch: left bran
         let in_reg_dst = in_data.reg_dst;
         let in_rd = in_data.rd;
         let in_rt = in_data.rt;
-        let in_pc = in_data.pc;
         let in_addr21 = in_data.addr21;
-        
+
         let in_mem_read = in_data.mem_read;
         let in_mem_write = in_data.mem_write;
         let in_reg_write = in_data.reg_write;
         let in_mem_to_reg = in_data.mem_to_reg;
         let in_branch_zero = in_data.branch_zero;
         let s_op = in_data.alu_op[0];
-        
+
+        // Branch target = addr21 * 4 (word -> byte address).
         let bt1 = in_addr21 + in_addr21;
         let branch_target = bt1 + bt1;
-        
-        if in_alu_src == 1'b1 {
-            let alu_b = in_imm;
-            if in_reg_dst == 1'b1 {
-                let dest_reg = in_rd;
-                if s_op == 1'b1 {
-                    let alu_result = in_rd1 - alu_b;
-                    let a_is_zero = in_rd1 == 32'd0;
-                    let branch_taken = in_branch_zero & a_is_zero;
-                    let out_data = ex_mem_t::{alu_result = alu_result; write_data = in_rd2; dest_reg = dest_reg; mem_read = in_mem_read; mem_write = in_mem_write; reg_write = in_reg_write; mem_to_reg = in_mem_to_reg} >>
-                    
-                    set temp_b_taken := branch_taken >>
-                    set temp_b_target := branch_target >>
-                    
-                    send ep_out.req(out_data) >>
-                    recv ep_out.res >>
-                    
-                    send ep_in.res(1'b1) >>
-                    recv ep_branch.res >>
-                    
-                    set prev_b_taken := *temp_b_taken >>
-                    set prev_b_target := *temp_b_target >>
-                    cycle 1
-                } else {
-                    let alu_result = in_rd1 + alu_b;
-                    let a_is_zero = in_rd1 == 32'd0;
-                    let branch_taken = in_branch_zero & a_is_zero;
-                    let out_data = ex_mem_t::{alu_result = alu_result; write_data = in_rd2; dest_reg = dest_reg; mem_read = in_mem_read; mem_write = in_mem_write; reg_write = in_reg_write; mem_to_reg = in_mem_to_reg} >>
-                    
-                    set temp_b_taken := branch_taken >>
-                    set temp_b_target := branch_target >>
-                    
-                    send ep_out.req(out_data) >>
-                    recv ep_out.res >>
-                    
-                    send ep_in.res(1'b1) >>
-                    recv ep_branch.res >>
-                    
-                    set prev_b_taken := *temp_b_taken >>
-                    set prev_b_target := *temp_b_target >>
-                    cycle 1
-                }
-            } else {
-                let dest_reg = in_rt;
-                if s_op == 1'b1 {
-                    let alu_result = in_rd1 - alu_b;
-                    let a_is_zero = in_rd1 == 32'd0;
-                    let branch_taken = in_branch_zero & a_is_zero;
-                    let out_data = ex_mem_t::{alu_result = alu_result; write_data = in_rd2; dest_reg = dest_reg; mem_read = in_mem_read; mem_write = in_mem_write; reg_write = in_reg_write; mem_to_reg = in_mem_to_reg} >>
-                    
-                    set temp_b_taken := branch_taken >>
-                    set temp_b_target := branch_target >>
-                    
-                    send ep_out.req(out_data) >>
-                    recv ep_out.res >>
-                    
-                    send ep_in.res(1'b1) >>
-                    recv ep_branch.res >>
-                    
-                    set prev_b_taken := *temp_b_taken >>
-                    set prev_b_target := *temp_b_target >>
-                    cycle 1
-                } else {
-                    let alu_result = in_rd1 + alu_b;
-                    let a_is_zero = in_rd1 == 32'd0;
-                    let branch_taken = in_branch_zero & a_is_zero;
-                    let out_data = ex_mem_t::{alu_result = alu_result; write_data = in_rd2; dest_reg = dest_reg; mem_read = in_mem_read; mem_write = in_mem_write; reg_write = in_reg_write; mem_to_reg = in_mem_to_reg} >>
-                    
-                    set temp_b_taken := branch_taken >>
-                    set temp_b_target := branch_target >>
-                    
-                    send ep_out.req(out_data) >>
-                    recv ep_out.res >>
-                    
-                    send ep_in.res(1'b1) >>
-                    recv ep_branch.res >>
-                    
-                    set prev_b_taken := *temp_b_taken >>
-                    set prev_b_target := *temp_b_target >>
-                    cycle 1
-                }
-            }
-        } else {
-            let alu_b = in_rd2;
-            if in_reg_dst == 1'b1 {
-                let dest_reg = in_rd;
-                if s_op == 1'b1 {
-                    let alu_result = in_rd1 - alu_b;
-                    let a_is_zero = in_rd1 == 32'd0;
-                    let branch_taken = in_branch_zero & a_is_zero;
-                    let out_data = ex_mem_t::{alu_result = alu_result; write_data = in_rd2; dest_reg = dest_reg; mem_read = in_mem_read; mem_write = in_mem_write; reg_write = in_reg_write; mem_to_reg = in_mem_to_reg} >>
-                    
-                    set temp_b_taken := branch_taken >>
-                    set temp_b_target := branch_target >>
-                    
-                    send ep_out.req(out_data) >>
-                    recv ep_out.res >>
-                    
-                    send ep_in.res(1'b1) >>
-                    recv ep_branch.res >>
-                    
-                    set prev_b_taken := *temp_b_taken >>
-                    set prev_b_target := *temp_b_target >>
-                    cycle 1
-                } else {
-                    let alu_result = in_rd1 + alu_b;
-                    let a_is_zero = in_rd1 == 32'd0;
-                    let branch_taken = in_branch_zero & a_is_zero;
-                    let out_data = ex_mem_t::{alu_result = alu_result; write_data = in_rd2; dest_reg = dest_reg; mem_read = in_mem_read; mem_write = in_mem_write; reg_write = in_reg_write; mem_to_reg = in_mem_to_reg} >>
-                    
-                    set temp_b_taken := branch_taken >>
-                    set temp_b_target := branch_target >>
-                    
-                    send ep_out.req(out_data) >>
-                    recv ep_out.res >>
-                    
-                    send ep_in.res(1'b1) >>
-                    recv ep_branch.res >>
-                    
-                    set prev_b_taken := *temp_b_taken >>
-                    set prev_b_target := *temp_b_target >>
-                    cycle 1
-                }
-            } else {
-                let dest_reg = in_rt;
-                if s_op == 1'b1 {
-                    let alu_result = in_rd1 - alu_b;
-                    let a_is_zero = in_rd1 == 32'd0;
-                    let branch_taken = in_branch_zero & a_is_zero;
-                    let out_data = ex_mem_t::{alu_result = alu_result; write_data = in_rd2; dest_reg = dest_reg; mem_read = in_mem_read; mem_write = in_mem_write; reg_write = in_reg_write; mem_to_reg = in_mem_to_reg} >>
-                    
-                    set temp_b_taken := branch_taken >>
-                    set temp_b_target := branch_target >>
-                    
-                    send ep_out.req(out_data) >>
-                    recv ep_out.res >>
-                    
-                    send ep_in.res(1'b1) >>
-                    recv ep_branch.res >>
-                    
-                    set prev_b_taken := *temp_b_taken >>
-                    set prev_b_target := *temp_b_target >>
-                    cycle 1
-                } else {
-                    let alu_result = in_rd1 + alu_b;
-                    let a_is_zero = in_rd1 == 32'd0;
-                    let branch_taken = in_branch_zero & a_is_zero;
-                    let out_data = ex_mem_t::{alu_result = alu_result; write_data = in_rd2; dest_reg = dest_reg; mem_read = in_mem_read; mem_write = in_mem_write; reg_write = in_reg_write; mem_to_reg = in_mem_to_reg} >>
-                    
-                    set temp_b_taken := branch_taken >>
-                    set temp_b_target := branch_target >>
-                    
-                    send ep_out.req(out_data) >>
-                    recv ep_out.res >>
-                    
-                    send ep_in.res(1'b1) >>
-                    recv ep_branch.res >>
-                    
-                    set prev_b_taken := *temp_b_taken >>
-                    set prev_b_target := *temp_b_target >>
-                    cycle 1
-                }
-            }
-        }
+
+        // Combinational muxes -- compute the operand/destination/op select
+        // once instead of once per (alu_src, reg_dst, s_op) combination.
+        let alu_b      = if in_alu_src == 1'b1 { in_imm } else { in_rd2 };
+        let dest_reg   = if in_reg_dst == 1'b1 { in_rd } else { in_rt };
+        let alu_result = if s_op == 1'b1 { in_rd1 - alu_b } else { in_rd1 + alu_b };
+
+        let a_is_zero    = in_rd1 == 32'd0;
+        let branch_taken = in_branch_zero & a_is_zero;
+
+        let out_data = ex_mem_t::{
+            alu_result = alu_result; write_data = in_rd2; dest_reg = dest_reg;
+            mem_read = in_mem_read; mem_write = in_mem_write;
+            reg_write = in_reg_write; mem_to_reg = in_mem_to_reg
+        } >>
+
+        set temp_b_taken := branch_taken >>
+        set temp_b_target := branch_target >>
+
+        send ep_out.req(out_data) >>
+        recv ep_out.res >>
+
+        send ep_in.res(1'b1) >>
+        recv ep_branch.res >>
+
+        set prev_b_taken := *temp_b_taken >>
+        set prev_b_target := *temp_b_target >>
+        cycle 1
     }
 }

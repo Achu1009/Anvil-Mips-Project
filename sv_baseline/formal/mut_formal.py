@@ -62,7 +62,7 @@ for tag, (fn, old, new) in MUT.items():
     log = r.stdout + r.stderr
     hits = re.findall(r"bad state property (\d+) reachable at bound k = (\d+)", log)
     if hits:
-        order = re.findall(r"bad \d+ (a_p\w+)",
+        order = re.findall(r"bad \d+ ([\w.]+)",  # FIXED 2026-09-17: was (a_p\w+), see run_sweep.py
                            open(d + "/run/model/design_btor.btor").read())
         fired = sorted({"%s(k=%s)" % (order[int(i)], k) for i, k in hits})
         print("%-26s %-10s %s" % (tag, "CAUGHT", ", ".join(fired)), flush=True)

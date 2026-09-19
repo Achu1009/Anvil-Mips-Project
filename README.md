@@ -105,7 +105,11 @@ SVA_Rationale_Supplementary.pdf  Supplementary SVA docs
 Submission_Manifest.md           Submission details
 
 sv_baseline/                     Handwritten SV pipeline & SVA suite
-port1_serialised/                Anvil prototype: Fully serialised (11 cycles/instr)
+port1_serialised/                Anvil prototype: Fully serialised (11 cycles/instr;
+                                  refactored for dead code/duplicate branches,
+                                  verified cycle-accurate to the original)
+port1_serialised_legacy/         Pre-refactor original of port1_serialised, kept
+                                  for provenance/diffing
 port2_static_baseline/           Anvil port: Static contracts (Cycle-Accurate)
 port3_dynamic_backpressured/     Anvil port: Dynamic channels (Architectural)
 

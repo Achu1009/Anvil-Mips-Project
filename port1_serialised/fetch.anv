@@ -1,14 +1,21 @@
 import "types.anv"
 
+// Fetch stage.
+// Owns the PC and instruction memory. Reacts to the branch-resolution
+// message coming back from Execute (branch decision is made there, not
+// here).
 proc Fetch(ep_out: left if_id_ch, ep_branch: right branch_ch) {
     reg pc: logic[32];
     reg imem: logic[256][32];
-    reg init_done: logic;
-    
+    reg init_done: logic; // just a persistent memory
+
     loop {
         let done = *init_done;
-        
+
         if done == 1'b0 {
+            // One-time instruction memory load. This is a genuinely
+            // separate startup state, not part of the decode tree, so it
+            // is left alone.
             set imem[0] := 32'h8C010000 >>
             set imem[1] := 32'h00201020 >>
             set imem[2] := 32'h00411022 >>
@@ -22,9 +29,18 @@ proc Fetch(ep_out: left if_id_ch, ep_branch: right branch_ch) {
             let b_update = recv ep_branch.req >>
             let branch = b_update.branch_taken;
             let b_target = b_update.branch_target;
-            
+
             let p_c = *pc;
-            
+            let index = p_c[2+:8];
+            let fetched_instr = *imem[index];
+
+            // The imem read itself is unconditional (as in real hardware,
+            // memory is always addressed by the PC); only the *result* differs
+            // between a taken and not-taken branch, so that final choice is
+            // still made once, not duplicated -- but next_instr/next_pc are
+            // resolved together inside a single branch (not as two separate
+            // value-if expressions) so there's no cross-branch borrow of
+            // fetched_instr/pc to track.
             if branch == 1'b1 {
                 send ep_out.req(if_id_t::{ pc = p_c; instr = 32'd0 }) >>
                 recv ep_out.res >>
@@ -32,9 +48,7 @@ proc Fetch(ep_out: left if_id_ch, ep_branch: right branch_ch) {
                 send ep_branch.res(1'b1) >>
                 cycle 1
             } else {
-                let index = p_c[2+:8];
-                let instr = *imem[index];
-                send ep_out.req(if_id_t::{ pc = p_c; instr = instr }) >>
+                send ep_out.req(if_id_t::{ pc = p_c; instr = fetched_instr }) >>
                 recv ep_out.res >>
                 set pc := p_c + 32'd4 >>
                 send ep_branch.res(1'b1) >>
